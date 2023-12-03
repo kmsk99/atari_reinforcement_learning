@@ -8,11 +8,14 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 
+# CUDA 사용 가능 여부 확인
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 # 하이퍼파라미터 설정
 learning_rate = 0.0005  # 학습률
 gamma = 0.98  # 할인계수
-buffer_limit = 50000  # 경험 리플레이 버퍼의 최대 크기
-batch_size = 32  # 배치 크기
+buffer_limit = 10000  # 버퍼 크기를 줄임
+batch_size = 16  # 배치 크기를 줄임
 
 # 경험 리플레이 버퍼 정의
 class ReplayBuffer:
@@ -72,13 +75,13 @@ class Qnet(nn.Module):
         x = x.reshape(x.size(0), -1)  # 데이터 평탄화
         x = F.relu(self.fc1(x))
         x = self.fc2(x)
-        return x
+        return x.to(device)  # 모델 출력을 GPU로 이동
 
     def sample_action(self, obs, epsilon):
         # 행동 선택 메서드
         if not isinstance(obs, torch.Tensor):
             obs = torch.from_numpy(obs).float()  # NumPy 배열을 Tensor로 변환
-        obs = obs.unsqueeze(0)  # 배치 차원 추가
+        obs = obs.to(device).unsqueeze(0)  # 단일 관찰에 배치 차원 추가 및 GPU로 이동
         obs = obs.permute(0, 3, 1, 2)  # 차원 재정렬
         out = self.forward(obs)
         coin = random.random()
@@ -91,6 +94,13 @@ class Qnet(nn.Module):
 def train(q, q_target, memory, optimizer):
     for i in range(10):
         s, a, r, s_prime, done_mask = memory.sample(batch_size)
+
+        # GPU로 이동
+        s = s.float().to(device)
+        s_prime = s_prime.float().to(device)
+        r = r.float().to(device)
+        done_mask = done_mask.float().to(device)
+        a = a.to(device)
 
         # 텐서 타입을 Float로 설정
         s = s.float()
@@ -116,8 +126,9 @@ def train(q, q_target, memory, optimizer):
 # 메인 함수 정의
 def main():
     env = gym.make("ALE/SpaceInvaders-v5")  # 환경 초기화
-    q = Qnet()
-    q_target = Qnet()
+    # 모델을 GPU로 이동
+    q = Qnet().to(device)
+    q_target = Qnet().to(device)
     q_target.load_state_dict(q.state_dict())
     memory = ReplayBuffer()
 
