@@ -195,7 +195,6 @@ def main():
         q.load_state_dict(checkpoint['model_state'])
         q_target.load_state_dict(checkpoint['target_model_state'])
         optimizer.load_state_dict(checkpoint['optimizer_state'])
-        memory = checkpoint['memory']
         start_episode = checkpoint['episode']
         scores = loaded_scores  # 이전 점수 이력 로드
 
@@ -246,7 +245,6 @@ def main():
                 'model_state': q.state_dict(),
                 'target_model_state': q_target.state_dict(),
                 'optimizer_state': optimizer.state_dict(),
-                'memory': memory,
                 'episode': n_epi  # 현재 에피소드 번호 저장
             }, n_epi, scores)
 
