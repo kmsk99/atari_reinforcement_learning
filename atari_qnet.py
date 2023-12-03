@@ -21,7 +21,7 @@ buffer_limit = 50000  # 버퍼 크기
 batch_size = 32  # 배치 크기
 
 # 체크포인트 저장 폴더 생성
-checkpoint_dir = "checkpoints"
+checkpoint_dir = "qnet_v1_checkpoints"
 os.makedirs(checkpoint_dir, exist_ok=True)
 
 # 체크포인트 저장 함수
@@ -174,7 +174,9 @@ def plot_scores(scores, filename):
 
 # 메인 함수 정의
 def main():
-    env = gym.make("ALE/SpaceInvaders-v5")  # 환경 초기화
+    env = gym.make("ALE/SpaceInvaders-v5"
+                #    , render_mode="human"
+                   )  # 환경 초기화
     # 모델을 GPU로 이동
     q = Qnet().to(device)
     q_target = Qnet().to(device)
