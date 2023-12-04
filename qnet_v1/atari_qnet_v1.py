@@ -1,9 +1,10 @@
 # 라이브러리 임포트
 import glob
+import re
+import random
 import os
 import gymnasium as gym
 import collections
-import random
 import numpy as np
 import torch
 import torch.nn as nn
@@ -20,18 +21,27 @@ gamma = 0.98  # 할인계수
 buffer_limit = 50000  # 버퍼 크기
 batch_size = 32  # 배치 크기
 
-# 체크포인트 저장 폴더 생성
-checkpoint_dir = "checkpoints"
+# 현재 스크립트의 경로를 찾습니다.
+current_script_path = os.path.dirname(os.path.realpath(__file__))
+
+# 체크포인트 저장 폴더 경로를 현재 스크립트 위치를 기준으로 설정합니다.
+checkpoint_dir = os.path.join(current_script_path, "checkpoints")
 os.makedirs(checkpoint_dir, exist_ok=True)
 
 
-# 체크포인트 저장 함수
 def save_checkpoint(state, episode, scores, checkpoint_dir=checkpoint_dir, keep_last=2):
     filepath = os.path.join(checkpoint_dir, f"checkpoint_{episode}.pth")
     torch.save({"state": state, "scores": scores}, filepath)
 
+    # 파일 이름에서 숫자를 추출하는 람다 함수
+    extract_number = lambda filename: int(re.search(r"\d+", filename).group())
+
+    # 체크포인트 파일을 숫자 기준으로 정렬
+    checkpoints = sorted(
+        glob.glob(os.path.join(checkpoint_dir, "checkpoint_*.pth")), key=extract_number
+    )
+
     # 오래된 체크포인트 삭제
-    checkpoints = sorted(glob.glob(os.path.join(checkpoint_dir, "checkpoint_*.pth")))
     if len(checkpoints) > keep_last:
         os.remove(checkpoints[0])  # 가장 오래된 체크포인트 삭제
 
@@ -179,7 +189,7 @@ def plot_scores(scores, filename):
     plt.ylabel("Score")
     plt.title("Scores per Episode")
     plt.legend()
-    plt.savefig(filename)
+    plt.savefig(os.path.join(current_script_path, filename))
     plt.close()
 
 
@@ -214,7 +224,7 @@ def main():
 
     checkpoint_interval = 100  # 체크포인트 저장 간격
 
-    for n_epi in range(start_episode, 3000):
+    for n_epi in range(start_episode, 3001):
         epsilon = max(0.005, 0.08 - 0.01 * (n_epi / 200))  # 탐험률 조정
         s, _ = env.reset()
         done = False
