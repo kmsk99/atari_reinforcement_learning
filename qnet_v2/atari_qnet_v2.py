@@ -11,6 +11,8 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
+from PIL import Image
+import torchvision.transforms as T
 
 # CUDA 사용 가능 여부 확인
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -58,115 +60,75 @@ def load_checkpoint(checkpoint_dir=checkpoint_dir):
 # 경험 리플레이 버퍼 정의
 class ReplayBuffer:
     def __init__(self):
-        self.buffer = collections.deque(maxlen=buffer_limit)  # 더블 엔드 큐를 사용한 버퍼 초기화
+        self.buffer = collections.deque(maxlen=buffer_limit)
 
     def put(self, transition):
-        self.buffer.append(transition)  # 버퍼에 경험 추가
+        self.buffer.append(transition)
 
     def sample(self, n):
-        mini_batch = random.sample(self.buffer, n)  # 버퍼에서 무작위로 n개 샘플 추출
+        mini_batch = random.sample(self.buffer, n)
         s_lst, a_lst, r_lst, s_prime_lst, done_mask_lst = [], [], [], [], []
 
         for transition in mini_batch:
             s, a, r, s_prime, done_mask = transition
-            s_lst.append(s.transpose(2, 0, 1))  # 차원 순서 변경
-            s_prime_lst.append(s_prime.transpose(2, 0, 1))
+            s_lst.append(s)  # 이미 적절한 형태로 들어있으므로 변경 없음
+            s_prime_lst.append(s_prime)
             a_lst.append([a])
             r_lst.append([r])
             done_mask_lst.append([done_mask])
 
-        # numpy 배열로 변환한 후 torch 텐서로 변환
         return (
-            torch.tensor(np.array(s_lst), dtype=torch.float),
-            torch.tensor(np.array(a_lst), dtype=torch.long),
-            torch.tensor(np.array(r_lst), dtype=torch.float),
-            torch.tensor(np.array(s_prime_lst), dtype=torch.float),
-            torch.tensor(np.array(done_mask_lst)),
+            torch.stack(s_lst).float().to(device),  # 스택 후 GPU로 이동
+            torch.tensor(a_lst, dtype=torch.long).to(device),
+            torch.tensor(r_lst, dtype=torch.float).to(device),
+            torch.stack(s_prime_lst).float().to(device),
+            torch.tensor(done_mask_lst, dtype=torch.float).to(device),
         )
 
     def size(self):
-        return len(self.buffer)  # 버퍼 크기 반환
-
-
-class SELayer(nn.Module):
-    def __init__(self, channel, reduction=4):
-        super(SELayer, self).__init__()
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Sequential(
-            nn.Linear(channel, channel // reduction, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Linear(channel // reduction, channel, bias=False),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, x):
-        b, c, _, _ = x.size()
-        y = self.avg_pool(x).view(b, c)
-        y = self.fc(y).view(b, c, 1, 1)
-        return x * y.expand_as(x)
-
-
-class DepthwiseSeparableConv(nn.Module):
-    def __init__(self, in_ch, out_ch, stride):
-        super(DepthwiseSeparableConv, self).__init__()
-        self.depthwise = nn.Conv2d(
-            in_ch, in_ch, kernel_size=3, stride=stride, padding=1, groups=in_ch
-        )
-        self.pointwise = nn.Conv2d(in_ch, out_ch, kernel_size=1, stride=1, padding=0)
-        self.bn = nn.BatchNorm2d(out_ch)
-        self.relu = nn.ReLU(inplace=True)
-
-    def forward(self, x):
-        x = self.depthwise(x)
-        x = self.pointwise(x)
-        x = self.bn(x)
-        return self.relu(x)
+        return len(self.buffer)
 
 
 class Qnet(nn.Module):
-    def __init__(self):
+    def __init__(self, num_actions):
         super(Qnet, self).__init__()
-        self.model = nn.Sequential(
-            DepthwiseSeparableConv(3, 16, 2),
-            SELayer(16),
-            DepthwiseSeparableConv(16, 32, 2),
-            SELayer(32),
-            DepthwiseSeparableConv(32, 64, 2),
-            SELayer(64),
-            # 추가 컨볼루션 및 SELayer 레이어를 추가할 수 있음
-            nn.AdaptiveAvgPool2d(1),
-        )
-        self.fc = nn.Sequential(
-            nn.Linear(64, 512),
-            nn.ReLU(inplace=True),
-            nn.Linear(512, 6),  # 액션의 개수에 따라 출력 크기 설정
-        )
+        self.conv1 = nn.Conv2d(4, 32, kernel_size=8, stride=4)  # 입력 채널이 4 (84x84x4)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+
+        self.fc1 = nn.Linear(self._feature_size(), 512)  # 최종 연결 레이어에 대한 입력 크기를 계산
+        self.fc2 = nn.Linear(512, num_actions)  # 출력 크기는 행동 수에 해당
 
     def _feature_size(self):
         # CNN 출력 크기 계산을 위한 임시 데이터 처리
-        with torch.no_grad():
-            return (
-                nn.Sequential(self.conv1, self.conv2, self.conv3)
-                .forward(torch.zeros(1, 3, 210, 160))
-                .view(1, -1)
-                .size(1)
-            )
+        return (
+            nn.Sequential(self.conv1, self.conv2, self.conv3)
+            .forward(torch.zeros(1, 4, 84, 84))
+            .view(1, -1)
+            .size(1)
+        )
 
     def forward(self, x):
-        x = self.model(x)
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
         x = x.view(x.size(0), -1)  # Flatten
-        return self.fc(x)
+        x = F.relu(self.fc1(x))
+        return self.fc2(x)
 
     def sample_action(self, obs, epsilon):
         # 행동 선택 메서드
         if not isinstance(obs, torch.Tensor):
             obs = torch.from_numpy(obs).float()  # NumPy 배열을 Tensor로 변환
-        obs = obs.to(device).unsqueeze(0)  # 단일 관찰에 배치 차원 추가 및 GPU로 이동
-        obs = obs.permute(0, 3, 1, 2)  # 차원 재정렬
+        obs = obs.to(device)  # 장치(GPU 또는 CPU)로 이동
+
+        if obs.dim() == 3:  # 단일 프레임인 경우
+            obs = obs.unsqueeze(0)  # 배치 차원 추가
+
         out = self.forward(obs)
         coin = random.random()
         if coin < epsilon:
-            return random.randint(0, 5)  # 무작위 액션 선택
+            return random.randint(0, out.size(-1) - 1)  # 무작위 액션 선택
         else:
             return out.argmax().item()  # 최적의 액션 선택
 
@@ -228,85 +190,31 @@ def plot_scores(scores, filename):
     plt.close()
 
 
-import math
-from torch.optim.lr_scheduler import _LRScheduler
+transform = T.Compose(
+    [
+        T.ToPILImage(),
+        T.Grayscale(num_output_channels=1),
+        T.Resize((84, 84)),
+        T.ToTensor(),
+    ]
+)
 
 
-class CosineAnnealingWarmUpRestarts(_LRScheduler):
-    def __init__(
-        self, optimizer, T_0, T_mult=1, eta_max=0.1, T_up=0, gamma=1.0, last_epoch=-1
-    ):
-        if T_0 <= 0 or not isinstance(T_0, int):
-            raise ValueError("Expected positive integer T_0, but got {}".format(T_0))
-        if T_mult < 1 or not isinstance(T_mult, int):
-            raise ValueError("Expected integer T_mult >= 1, but got {}".format(T_mult))
-        if T_up < 0 or not isinstance(T_up, int):
-            raise ValueError("Expected positive integer T_up, but got {}".format(T_up))
-        self.T_0 = T_0
-        self.T_mult = T_mult
-        self.base_eta_max = eta_max
-        self.eta_max = eta_max
-        self.T_up = T_up
-        self.T_i = T_0
-        self.gamma = gamma
-        self.cycle = 0
-        self.T_cur = last_epoch
-        super(CosineAnnealingWarmUpRestarts, self).__init__(optimizer, last_epoch)
+def preprocess(frame):
+    frame = transform(frame)
+    return frame.squeeze(0)  # 배치 차원 제거
 
-    def get_lr(self):
-        if self.T_cur == -1:
-            return self.base_lrs
-        elif self.T_cur < self.T_up:
-            return [
-                (self.eta_max - base_lr) * self.T_cur / self.T_up + base_lr
-                for base_lr in self.base_lrs
-            ]
-        else:
-            return [
-                base_lr
-                + (self.eta_max - base_lr)
-                * (
-                    1
-                    + math.cos(
-                        math.pi * (self.T_cur - self.T_up) / (self.T_i - self.T_up)
-                    )
-                )
-                / 2
-                for base_lr in self.base_lrs
-            ]
 
-    def step(self, epoch=None):
-        if epoch is None:
-            epoch = self.last_epoch + 1
-            self.T_cur = self.T_cur + 1
-            if self.T_cur >= self.T_i:
-                self.cycle += 1
-                self.T_cur = self.T_cur - self.T_i
-                self.T_i = (self.T_i - self.T_up) * self.T_mult + self.T_up
-        else:
-            if epoch >= self.T_0:
-                if self.T_mult == 1:
-                    self.T_cur = epoch % self.T_0
-                    self.cycle = epoch // self.T_0
-                else:
-                    n = int(
-                        math.log(
-                            (epoch / self.T_0 * (self.T_mult - 1) + 1), self.T_mult
-                        )
-                    )
-                    self.cycle = n
-                    self.T_cur = epoch - self.T_0 * (self.T_mult**n - 1) / (
-                        self.T_mult - 1
-                    )
-                    self.T_i = self.T_0 * self.T_mult ** (n)
-            else:
-                self.T_i = self.T_0
-                self.T_cur = epoch
+# 이전 프레임을 저장하기 위한 큐
+from collections import deque
 
-        self.eta_max = self.base_eta_max * (self.gamma**self.cycle)
-        self.last_epoch = math.floor(epoch)
-        for param_group, lr in zip(self.optimizer.param_groups, self.get_lr()):
-            param_group["lr"] = lr
+frame_queue = deque(maxlen=4)
+
+
+# 프레임을 초기화하는 함수
+def init_frames():
+    for _ in range(4):
+        frame_queue.append(torch.zeros(84, 84))
 
 
 # 메인 함수 정의
@@ -316,21 +224,23 @@ def main():
         #    , render_mode="human"
     )  # 환경 초기화
     # 모델을 GPU로 이동
-    q = Qnet().to(device)
-    q_target = Qnet().to(device)
+    q = Qnet(6).to(device)
+    q_target = Qnet(6).to(device)
     q_target.load_state_dict(q.state_dict())
     memory = ReplayBuffer()
 
-    print_interval = 10
+    print_interval = 20
     score = 0.0
     average_score = 0.0
 
     # 최적화 함수 설정
-    optimizer = optim.Adam(q.parameters(), lr=0)  # 초기 학습률 설정
+    optimizer = optim.Adam(q.parameters(), lr=0.1)  # 초기 학습률 설정
 
     # CosineAnnealingLR 스케줄러 초기화
-    scheduler = CosineAnnealingWarmUpRestarts(
-        optimizer, T_0=50, T_mult=2, eta_max=0.1, T_up=10, gamma=0.5
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=2000,
+        eta_min=0.0005,
     )
 
     scores = []  # 에피소드별 점수 저장 리스트
@@ -350,14 +260,22 @@ def main():
     for n_epi in range(start_episode, 3001):
         epsilon = max(0.005, 0.08 - 0.01 * (n_epi / 200))  # 탐험률 조정
         s, _ = env.reset()
+        init_frames()  # 프레임 큐 초기화
+        frame_queue.append(preprocess(s))  # 첫 프레임 추가
         done = False
 
         while not done:
-            a = q.sample_action(torch.from_numpy(s).float(), epsilon)
+            # 현재 상태를 4개 프레임으로 구성
+            current_state = torch.stack(list(frame_queue), dim=0)
+
+            a = q.sample_action(current_state, epsilon)
             s_prime, r, terminated, truncated, info = env.step(a)
             done = terminated or truncated
+            frame_queue.append(preprocess(s_prime))  # 새 프레임 추가
+            next_state = torch.stack(list(frame_queue), dim=0)
+
             done_mask = 0.0 if done else 1.0
-            memory.put((s, a, r / 100.0, s_prime, done_mask))
+            memory.put((current_state, a, r / 100.0, next_state, done_mask))
             s = s_prime
 
             score += r
