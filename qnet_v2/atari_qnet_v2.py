@@ -13,6 +13,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from PIL import Image
 import torchvision.transforms as T
+from torch.utils.data import WeightedRandomSampler
 
 # CUDA 사용 가능 여부 확인
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -57,36 +58,41 @@ def load_checkpoint(checkpoint_dir=checkpoint_dir):
     return checkpoint["state"], checkpoint["scores"]
 
 
-# 경험 리플레이 버퍼 정의
-class ReplayBuffer:
+class PrioritizedReplayBuffe:
     def __init__(self):
         self.buffer = collections.deque(maxlen=buffer_limit)
+        self.priorities = collections.deque(maxlen=buffer_limit)
 
-    def put(self, transition):
+    def put(self, transition, priority):
         self.buffer.append(transition)
+        self.priorities.append(priority)
 
     def sample(self, n):
-        mini_batch = random.sample(self.buffer, n)
+        sampler = WeightedRandomSampler(self.priorities, n, replacement=True)
+        indices = list(sampler)
+
+        mini_batch = [self.buffer[idx] for idx in indices]
         s_lst, a_lst, r_lst, s_prime_lst, done_mask_lst = [], [], [], [], []
 
         for transition in mini_batch:
             s, a, r, s_prime, done_mask = transition
-            s_lst.append(s)  # 이미 적절한 형태로 들어있으므로 변경 없음
+            s_lst.append(s)
             s_prime_lst.append(s_prime)
             a_lst.append([a])
             r_lst.append([r])
             done_mask_lst.append([done_mask])
 
         return (
-            torch.stack(s_lst).float().to(device),  # 스택 후 GPU로 이동
+            torch.stack(s_lst).float().to(device),
             torch.tensor(a_lst, dtype=torch.long).to(device),
             torch.tensor(r_lst, dtype=torch.float).to(device),
             torch.stack(s_prime_lst).float().to(device),
             torch.tensor(done_mask_lst, dtype=torch.float).to(device),
+            indices,  # 반환 값에 indices 추가
         )
 
-    def size(self):
-        return len(self.buffer)
+    def update_priority(self, idx, priority):
+        self.priorities[idx] = priority
 
 
 class Qnet(nn.Module):
@@ -136,7 +142,7 @@ class Qnet(nn.Module):
 # 훈련 함수 정의
 def train(q, q_target, memory, optimizer):
     for i in range(10):
-        s, a, r, s_prime, done_mask = memory.sample(batch_size)
+        s, a, r, s_prime, done_mask, indices = memory.sample(batch_size)  # indices 추가
 
         # GPU로 이동
         s = s.float().to(device)
@@ -165,6 +171,14 @@ def train(q, q_target, memory, optimizer):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+
+        # TD 오류 계산
+        with torch.no_grad():
+            td_error = torch.abs(q_a - target)
+
+        # 우선순위 업데이트
+        for idx, error in zip(indices, td_error):
+            memory.update_priority(idx, error.item())
 
 
 # 그래프 그리기 및 저장 함수 업데이트
@@ -227,7 +241,9 @@ def main():
     q = Qnet(6).to(device)
     q_target = Qnet(6).to(device)
     q_target.load_state_dict(q.state_dict())
-    memory = ReplayBuffer()
+
+    # memory = ReplayBuffer() 대신에 아래 코드 사용
+    memory = PrioritizedReplayBuffer()
 
     print_interval = 20
     score = 0.0
@@ -275,7 +291,14 @@ def main():
             next_state = torch.stack(list(frame_queue), dim=0)
 
             done_mask = 0.0 if done else 1.0
-            memory.put((current_state, a, r / 100.0, next_state, done_mask))
+
+            # 이전 코드의 memory.put(...) 대신에 아래 코드 사용
+            # 초기 우선순위를 지정합니다. 예를 들어, 일정한 값으로 시작할 수 있습니다.
+            initial_priority = 1.0
+            memory.put(
+                (current_state, a, r / 100.0, next_state, done_mask), initial_priority
+            )
+
             s = s_prime
 
             score += r
