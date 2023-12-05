@@ -33,17 +33,19 @@ def save_checkpoint(state, episode, scores, checkpoint_dir=checkpoint_dir, keep_
     filepath = os.path.join(checkpoint_dir, f"checkpoint_{episode}.pth")
     torch.save({"state": state, "scores": scores}, filepath)
 
-    # 파일 이름에서 숫자를 추출하는 람다 함수
-    extract_number = lambda filename: int(re.search(r"\d+", filename).group())
+    # 파일 이름에서 숫자를 추출하고 정수로 변환하는 람다 함수
+    extract_number = lambda filename: int(
+        re.search(r"checkpoint_(\d+).pth", filename).group(1)
+    )
 
-    # 체크포인트 파일을 숫자 기준으로 정렬
+    # 체크포인트 파일을 숫자 기준으로 정렬 (이제 숫자는 정수로 처리됨)
     checkpoints = sorted(
         glob.glob(os.path.join(checkpoint_dir, "checkpoint_*.pth")), key=extract_number
     )
 
     # 오래된 체크포인트 삭제
-    if len(checkpoints) > keep_last:
-        os.remove(checkpoints[0])  # 가장 오래된 체크포인트 삭제
+    while len(checkpoints) > keep_last:
+        os.remove(checkpoints.pop(0))  # 가장 오래된 체크포인트 삭제
 
 
 # 체크포인트 로드 함수
