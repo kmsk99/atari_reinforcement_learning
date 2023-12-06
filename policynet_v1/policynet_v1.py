@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 from PIL import Image
 import torchvision.transforms as T
 from torch.utils.data import WeightedRandomSampler
+from collections import namedtuple
 
 # CUDA 사용 가능 여부 확인
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -87,19 +88,7 @@ transform = T.Compose(
 
 def preprocess(frame):
     frame = transform(frame)
-    return frame.squeeze(0)  # 배치 차원 제거
-
-
-# 이전 프레임을 저장하기 위한 큐
-from collections import deque
-
-frame_queue = deque(maxlen=4)
-
-
-# 프레임을 초기화하는 함수
-def init_frames():
-    for _ in range(4):
-        frame_queue.append(torch.zeros(84, 84))
+    return frame.unsqueeze(0)
 
 
 # 체크포인트 로드 함수
@@ -112,50 +101,10 @@ def load_checkpoint(checkpoint_dir=checkpoint_dir):
     return checkpoint["state"], checkpoint["scores"]
 
 
-class PrioritizedReplayBuffer:
-    def __init__(self):
-        self.buffer = collections.deque(maxlen=buffer_limit)
-        self.priorities = collections.deque(maxlen=buffer_limit)
-
-    def put(self, transition, priority):
-        self.buffer.append(transition)
-        self.priorities.append(priority)
-
-    def sample(self, n):
-        sampler = WeightedRandomSampler(self.priorities, n, replacement=True)
-        indices = list(sampler)
-
-        mini_batch = [self.buffer[idx] for idx in indices]
-        s_lst, a_lst, r_lst, logp_lst, done_mask_lst = [], [], [], [], []
-
-        for transition in mini_batch:
-            s, a, r, logp, done_mask = transition
-            s_lst.append(s)
-            logp_lst.append(logp)
-            a_lst.append([a])
-            r_lst.append([r])
-            done_mask_lst.append([done_mask])
-
-        return (
-            torch.stack(s_lst).float().to(device),
-            torch.tensor(a_lst, dtype=torch.long).to(device),
-            torch.tensor(r_lst, dtype=torch.float).to(device),
-            torch.tensor(logp_lst, dtype=torch.float).to(device),
-            torch.tensor(done_mask_lst, dtype=torch.float).to(device),
-            indices,  # 반환 값에 indices 추가
-        )
-
-    def update_priority(self, idx, priority):
-        self.priorities[idx] = priority
-
-    def size(self):
-        return len(self.buffer)  # 버퍼 크기 반환
-
-
 class PolicyNet(nn.Module):
     def __init__(self, num_actions):
         super(PolicyNet, self).__init__()
-        self.conv1 = nn.Conv2d(4, 32, kernel_size=8, stride=4)
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=8, stride=4)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
 
@@ -165,7 +114,7 @@ class PolicyNet(nn.Module):
     def _feature_size(self):
         return (
             nn.Sequential(self.conv1, self.conv2, self.conv3)
-            .forward(torch.zeros(1, 4, 84, 84))
+            .forward(torch.zeros(1, 1, 84, 84))
             .view(1, -1)
             .size(1)
         )
@@ -174,7 +123,7 @@ class PolicyNet(nn.Module):
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
-        x = x.view(x.size(0), -1)
+        x = x.reshape(x.size(0), -1)  # 데이터 평탄화
         x = F.relu(self.fc1(x))
         return F.softmax(self.fc2(x), dim=1)  # 소프트맥스 적용
 
@@ -200,7 +149,7 @@ class PolicyNet(nn.Module):
 class ValueNet(nn.Module):
     def __init__(self):
         super(ValueNet, self).__init__()
-        self.conv1 = nn.Conv2d(4, 32, kernel_size=8, stride=4)
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=8, stride=4)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
 
@@ -210,7 +159,7 @@ class ValueNet(nn.Module):
     def _feature_size(self):
         return (
             nn.Sequential(self.conv1, self.conv2, self.conv3)
-            .forward(torch.zeros(1, 4, 84, 84))
+            .forward(torch.zeros(1, 1, 84, 84))
             .view(1, -1)
             .size(1)
         )
@@ -219,50 +168,39 @@ class ValueNet(nn.Module):
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
-        x = x.view(x.size(0), -1)
+        x = x.reshape(x.size(0), -1)  # 데이터 평탄화
         x = F.relu(self.fc1(x))
         return self.fc2(x)
 
 
-# 훈련 함수 정의
-def train(value_net, optimizer_policy, optimizer_value, memory):
-    for i in range(10):
-        s, a, r, logp, done_mask, indices = memory.sample(batch_size)
+# 트라젝토리 수집 함수
+def collect_trajectory(env, policy_net):
+    Trajectory = namedtuple("Trajectory", "states actions rewards dones logp")
+    state_list, action_list, reward_list, dones_list, logp_list = [], [], [], [], []
+    state, _ = env.reset()
+    done = False
+    steps = 0
+    state = preprocess(state)
 
-        # GPU로 이동
-        s = s.float().to(device)
-        logp = logp.float().to(device)
-        r = r.float().to(device)
-        done_mask = done_mask.float().to(device)
-        a = a.to(device)
+    while not done:
+        action, logp = policy_net.get_action_and_logp(state)
+        next_state, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
 
-        # 현재 가치와 타겟 가치 계산
-        current_values = value_net(s).squeeze(1)  # Squeeze를 사용하여 차원 축소
-        target_values = r + gamma * current_values * done_mask
+        state_list.append(state)
+        action_list.append(action)
+        reward_list.append(reward)
+        dones_list.append(done)
+        logp_list.append(logp)
+        state = preprocess(next_state)
+        steps += 1
 
-        # 가치 손실 계산
-        value_loss = F.mse_loss(current_values, target_values.detach())
+    return Trajectory(state_list, action_list, reward_list, dones_list, logp_list)
 
-        # 정책 손실 계산
-        advantage = target_values.detach() - current_values
-        policy_loss = -(logp * advantage).mean()
 
-        # 역전파 및 최적화
-        optimizer_policy.zero_grad()
-        policy_loss.backward()
-        optimizer_policy.step()
-
-        optimizer_value.zero_grad()
-        value_loss.backward()
-        optimizer_value.step()
-
-        # TD 오류 계산
-        with torch.no_grad():
-            td_error = torch.abs(target_values - current_values)
-
-        # 우선순위 업데이트
-        for idx, error in zip(indices, td_error):
-            memory.update_priority(idx, error.item())
+def calc_returns(rewards):
+    dis_rewards = [gamma**i * r for i, r in enumerate(rewards)]
+    return [sum(dis_rewards[i:]) for i in range(len(dis_rewards))]
 
 
 # 메인 함수 정의
@@ -276,22 +214,12 @@ def main():
     value_net = ValueNet().to(device)
 
     # 최적화 함수 설정
-    optimizer_policy = optim.Adam(policy_net.parameters(), lr=0.01)
-    optimizer_value = optim.Adam(value_net.parameters(), lr=0.01)
-
-    # 메모리 버퍼 초기화
-    memory = PrioritizedReplayBuffer()
+    policy_optimizer = optim.Adam(policy_net.parameters(), lr=0.01)
+    value_optimizer = optim.Adam(value_net.parameters(), lr=0.01)
 
     print_interval = 20
     score = 0.0
     average_score = 0.0
-
-    # CosineAnnealingLR 스케줄러 초기화
-    # scheduler_policy = torch.optim.lr_scheduler.CosineAnnealingLR(
-    #     optimizer_policy,
-    #     T_max=1000,
-    #     eta_min=0.01,
-    # )
 
     scores = []  # 에피소드별 점수 저장 리스트
 
@@ -301,58 +229,79 @@ def main():
     if checkpoint:
         policy_net.load_state_dict(checkpoint["policy_model_state"])
         value_net.load_state_dict(checkpoint["value_model_state"])
-        optimizer_policy.load_state_dict(checkpoint["optimizer_policy_state"])
-        optimizer_value.load_state_dict(checkpoint["optimizer_value_state"])
+        policy_optimizer.load_state_dict(checkpoint["policy_optimizer_state"])
+        value_optimizer.load_state_dict(checkpoint["value_optimizer_state"])
         start_episode = checkpoint["episode"]
         scores = loaded_scores  # 이전 점수 이력 로드
 
     checkpoint_interval = 100  # 체크포인트 저장 간격
 
-    for n_epi in range(start_episode, 3001):
-        s, _ = env.reset()
-        init_frames()  # 프레임 큐 초기화
-        frame_queue.append(preprocess(s))  # 첫 프레임 추가
-        done = False
+    num_iter = 3001
+    num_traj = 1
 
-        while not done:
-            # 현재 상태를 4개 프레임으로 구성
-            current_state = torch.stack(list(frame_queue), dim=0)
+    for n_epi in range(start_episode, num_iter):
+        traj_list = [collect_trajectory(env, policy_net) for _ in range(num_traj)]
+        returns = [calc_returns(traj.rewards) for traj in traj_list]
 
-            a, logp = policy_net.get_action_and_logp(current_state)
-            s_prime, r, terminated, truncated, info = env.step(a)
-            done = terminated or truncated
+        # ====================================#
+        # policy gradient with base function #
+        # ====================================#
+        policy_loss_terms = [
+            -1.0 * traj.logp[j] * (returns[i][j] - value_net(traj.states[j].to(device)))
+            for i, traj in enumerate(traj_list)
+            for j in range(len(traj.actions))
+        ]
 
-            done_mask = 0.0 if done else 1.0
+        # ====================================#
+        # policy gradient with reward-to-go  #
+        # ====================================#
+        # policy_loss_terms = [
+        #     -1.0 * traj.logp[j] * (torch.Tensor([returns[i][j]]).to(device))
+        #     for i, traj in enumerate(traj_list)
+        #     for j in range(len(traj.actions))
+        # ]
 
-            # 이전 코드의 memory.put(...) 대신에 아래 코드 사용
-            # 초기 우선순위를 지정합니다. 예를 들어, 일정한 값으로 시작할 수 있습니다.
-            initial_priority = 1.0
-            memory.put((current_state, a, r / 100.0, logp, done_mask), initial_priority)
+        # ====================================#
+        # policy gradient                    #
+        # ====================================#
+        # policy_loss_terms = [
+        #     -1.0 * traj.logp[j] * (torch.Tensor([returns[i][0]]).to(device))
+        #     for i, traj in enumerate(traj_list)
+        #     for j in range(len(traj.actions))
+        # ]
 
-            s = s_prime
+        policy_loss = 1.0 / num_traj * torch.cat(policy_loss_terms).sum()
+        policy_optimizer.zero_grad()
+        policy_loss.backward()
+        policy_optimizer.step()
 
-            score += r
-            average_score += r
-            if done:
-                break
+        value_loss_terms = [
+            1.0
+            / len(traj.actions)
+            * (value_net(traj.states[j].to(device)) - returns[i][j]) ** 2.0
+            for i, traj in enumerate(traj_list)
+            for j in range(len(traj.actions))
+        ]
+        value_loss = 1.0 / num_traj * torch.cat(value_loss_terms).sum()
+        value_optimizer.zero_grad()
+        value_loss.backward()
+        value_optimizer.step()
 
-        if memory.size() > 1000:
-            train(value_net, optimizer_policy, optimizer_value, memory)
-            # scheduler.step()  # 에피소드마다 학습률 업데이트
+        score = sum([traj_returns[0] for traj_returns in returns]) / num_traj
+        scores.append(score)
+
+        average_score += score
 
         if n_epi % print_interval == 0 and n_epi != 0:
             print(
-                "n_episode :{}, score : {:.1f}, n_buffer : {}".format(
-                    n_epi, average_score / print_interval, memory.size()
+                "n_episode :{}, score : {:.1f}".format(
+                    n_epi, average_score / print_interval
                 )
             )
             average_score = 0.0
 
-        scores.append(score)  # 점수 저장
-        score = 0
-
         # 매 10번째 에피소드마다 그래프 업데이트 및 저장
-        if n_epi % 10 == 0:
+        if n_epi % 1 == 0:
             plot_scores(scores, "score_plot.png")
 
         # 체크포인트 저장
@@ -361,8 +310,8 @@ def main():
                 {
                     "policy_model_state": policy_net.state_dict(),
                     "value_model_state": value_net.state_dict(),
-                    "optimizer_policy_state": optimizer_policy.state_dict(),
-                    "optimizer_value_state": optimizer_value.state_dict(),
+                    "policy_optimizer_state": policy_optimizer.state_dict(),
+                    "value_optimizer_state": value_optimizer.state_dict(),
                     "episode": n_epi,  # 현재 에피소드 번호 저장
                 },
                 n_epi,
