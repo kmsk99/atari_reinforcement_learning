@@ -88,7 +88,19 @@ transform = T.Compose(
 
 def preprocess(frame):
     frame = transform(frame)
-    return frame.unsqueeze(0)
+    return frame.squeeze(0)  # 배치 차원 제거
+
+
+# 이전 프레임을 저장하기 위한 큐
+from collections import deque
+
+frame_queue = deque(maxlen=4)
+
+
+# 프레임을 초기화하는 함수
+def init_frames():
+    for _ in range(4):
+        frame_queue.append(torch.zeros(84, 84))
 
 
 # 체크포인트 로드 함수
@@ -104,7 +116,7 @@ def load_checkpoint(checkpoint_dir=checkpoint_dir):
 class PolicyNet(nn.Module):
     def __init__(self, num_actions):
         super(PolicyNet, self).__init__()
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=8, stride=4)
+        self.conv1 = nn.Conv2d(4, 32, kernel_size=8, stride=4)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
 
@@ -114,7 +126,7 @@ class PolicyNet(nn.Module):
     def _feature_size(self):
         return (
             nn.Sequential(self.conv1, self.conv2, self.conv3)
-            .forward(torch.zeros(1, 1, 84, 84))
+            .forward(torch.zeros(1, 4, 84, 84))
             .view(1, -1)
             .size(1)
         )
@@ -149,7 +161,7 @@ class PolicyNet(nn.Module):
 class ValueNet(nn.Module):
     def __init__(self):
         super(ValueNet, self).__init__()
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=8, stride=4)
+        self.conv1 = nn.Conv2d(4, 32, kernel_size=8, stride=4)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
 
@@ -159,16 +171,17 @@ class ValueNet(nn.Module):
     def _feature_size(self):
         return (
             nn.Sequential(self.conv1, self.conv2, self.conv3)
-            .forward(torch.zeros(1, 1, 84, 84))
+            .forward(torch.zeros(1, 4, 84, 84))
             .view(1, -1)
             .size(1)
         )
 
     def forward(self, x):
+        x = x.unsqueeze(0)
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
-        x = x.reshape(x.size(0), -1)  # 데이터 평탄화
+        x = x.view(x.size(0), -1)  # 데이터 평탄화
         x = F.relu(self.fc1(x))
         return self.fc2(x)
 
@@ -180,14 +193,19 @@ def collect_trajectory(env, policy_net):
     state, _ = env.reset()
     done = False
     steps = 0
-    state = preprocess(state)
+    init_frames()  # 프레임 큐 초기화
+    frame_queue.append(preprocess(state))  # 첫 프레임 추가
 
     while not done:
-        action, logp = policy_net.get_action_and_logp(state)
+        # 현재 상태를 4개 프레임으로 구성
+        current_state = torch.stack(list(frame_queue), dim=0)
+
+        action, logp = policy_net.get_action_and_logp(current_state)
         next_state, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
+        frame_queue.append(preprocess(next_state))  # 새 프레임 추가
 
-        state_list.append(state)
+        state_list.append(current_state)
         action_list.append(action)
         reward_list.append(reward)
         dones_list.append(done)
@@ -217,7 +235,7 @@ def main():
     policy_optimizer = optim.Adam(policy_net.parameters(), lr=0.01)
     value_optimizer = optim.Adam(value_net.parameters(), lr=0.01)
 
-    print_interval = 20
+    print_interval = 10
     score = 0.0
     average_score = 0.0
 
@@ -234,10 +252,10 @@ def main():
         start_episode = checkpoint["episode"]
         scores = loaded_scores  # 이전 점수 이력 로드
 
-    checkpoint_interval = 100  # 체크포인트 저장 간격
+    checkpoint_interval = 10  # 체크포인트 저장 간격
 
     num_iter = 3001
-    num_traj = 1
+    num_traj = 5
 
     for n_epi in range(start_episode, num_iter):
         traj_list = [collect_trajectory(env, policy_net) for _ in range(num_traj)]
