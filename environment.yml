@@ -1,0 +1,12 @@
+name: c:\Users\momoq\Documents\atari_reinforcement\atari
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - gymnasium
+  - torchaudio
+  - pytorch-cuda=11.8
+  - torchvision
+  - pytorch
+  - matplotlib
+prefix: c:\Users\momoq\Documents\atari_reinforcement\atari

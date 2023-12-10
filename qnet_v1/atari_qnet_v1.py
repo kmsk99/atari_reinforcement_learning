@@ -29,7 +29,9 @@ checkpoint_dir = os.path.join(current_script_path, "checkpoints")
 os.makedirs(checkpoint_dir, exist_ok=True)
 
 
-def save_checkpoint(state, episode, scores, checkpoint_dir=checkpoint_dir, keep_last=2):
+def save_checkpoint(
+    state, episode, scores, checkpoint_dir=checkpoint_dir, keep_last=10
+):
     filepath = os.path.join(checkpoint_dir, f"checkpoint_{episode}.pth")
     torch.save({"state": state, "scores": scores}, filepath)
 
@@ -53,6 +55,17 @@ def load_checkpoint(checkpoint_dir=checkpoint_dir):
     checkpoints = sorted(glob.glob(os.path.join(checkpoint_dir, "checkpoint_*.pth")))
     if not checkpoints:
         return None, None  # 체크포인트가 없을 경우 None 반환
+
+    # 파일 이름에서 숫자를 추출하고 정수로 변환하는 람다 함수
+    extract_number = lambda filename: int(
+        re.search(r"checkpoint_(\d+).pth", filename).group(1)
+    )
+
+    # 체크포인트 파일을 숫자 기준으로 정렬 (이제 숫자는 정수로 처리됨)
+    checkpoints = sorted(
+        glob.glob(os.path.join(checkpoint_dir, "checkpoint_*.pth")), key=extract_number
+    )
+
     latest_checkpoint = checkpoints[-1]  # 가장 최근의 체크포인트
     checkpoint = torch.load(latest_checkpoint)
     return checkpoint["state"], checkpoint["scores"]

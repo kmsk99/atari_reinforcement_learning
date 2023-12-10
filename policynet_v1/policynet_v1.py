@@ -53,6 +53,27 @@ def save_checkpoint(
         os.remove(checkpoints.pop(0))  # 가장 오래된 체크포인트 삭제
 
 
+# 체크포인트 로드 함수
+def load_checkpoint(checkpoint_dir=checkpoint_dir):
+    checkpoints = sorted(glob.glob(os.path.join(checkpoint_dir, "checkpoint_*.pth")))
+    if not checkpoints:
+        return None, None  # 체크포인트가 없을 경우 None 반환
+
+    # 파일 이름에서 숫자를 추출하고 정수로 변환하는 람다 함수
+    extract_number = lambda filename: int(
+        re.search(r"checkpoint_(\d+).pth", filename).group(1)
+    )
+
+    # 체크포인트 파일을 숫자 기준으로 정렬 (이제 숫자는 정수로 처리됨)
+    checkpoints = sorted(
+        glob.glob(os.path.join(checkpoint_dir, "checkpoint_*.pth")), key=extract_number
+    )
+
+    latest_checkpoint = checkpoints[-1]  # 가장 최근의 체크포인트
+    checkpoint = torch.load(latest_checkpoint)
+    return checkpoint["state"], checkpoint["scores"]
+
+
 # 그래프 그리기 및 저장 함수 업데이트
 def plot_scores(scores, filename):
     plt.figure(figsize=(12, 6))
@@ -101,16 +122,6 @@ frame_queue = deque(maxlen=4)
 def init_frames():
     for _ in range(4):
         frame_queue.append(torch.zeros(84, 84))
-
-
-# 체크포인트 로드 함수
-def load_checkpoint(checkpoint_dir=checkpoint_dir):
-    checkpoints = sorted(glob.glob(os.path.join(checkpoint_dir, "checkpoint_*.pth")))
-    if not checkpoints:
-        return None, None  # 체크포인트가 없을 경우 None 반환
-    latest_checkpoint = checkpoints[-1]  # 가장 최근의 체크포인트
-    checkpoint = torch.load(latest_checkpoint)
-    return checkpoint["state"], checkpoint["scores"]
 
 
 class PolicyNet(nn.Module):

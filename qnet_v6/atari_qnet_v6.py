@@ -19,8 +19,8 @@ from torch.utils.data import WeightedRandomSampler
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # 하이퍼파라미터 설정
-gamma = 0.9999  # 할인계수
-buffer_limit = 30_000  # 버퍼 크기
+gamma = 0.999  # 할인계수
+buffer_limit = 100_000  # 버퍼 크기
 batch_size = 32  # 배치 크기
 
 # 현재 스크립트의 경로를 찾습니다.
@@ -72,7 +72,6 @@ def load_checkpoint(checkpoint_dir=checkpoint_dir):
     checkpoint = torch.load(latest_checkpoint)
     return checkpoint["state"], checkpoint["scores"]
 
-
 class PrioritizedReplayBuffer:
     def __init__(self):
         self.buffer = collections.deque(maxlen=buffer_limit)
@@ -113,16 +112,50 @@ class PrioritizedReplayBuffer:
         return len(self.buffer)  # 버퍼 크기 반환
 
 
-class DuelingQnet(nn.Module):
+class DepthwiseSeparableConv(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride, padding):
+        super(DepthwiseSeparableConv, self).__init__()
+        self.depthwise = nn.Conv2d(
+            in_channels, in_channels, kernel_size, stride, padding, groups=in_channels
+        )
+        self.pointwise = nn.Conv2d(in_channels, out_channels, 1, 1, 0)
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        x = self.depthwise(x)
+        x = self.pointwise(x)
+        x = self.bn(x)
+        return self.relu(x)
+
+
+class MobileNetDuelingQNet(nn.Module):
     def __init__(self, num_actions):
-        super(DuelingQnet, self).__init__()
-        # Convolutional layers
-        self.conv1 = nn.Conv2d(4, 64, kernel_size=9, stride=3)
-        self.pool1 = nn.MaxPool2d(3, 2)  # 새로운 풀링 레이어 추가
-        self.conv2 = nn.Conv2d(64, 128, kernel_size=5, stride=1)
-        self.pool2 = nn.MaxPool2d(3, 2)  # 새로운 풀링 레이어 추가
-        self.conv3 = nn.Conv2d(128, 256, kernel_size=3, stride=1)  # 필터 수 증가
-        self.conv4 = nn.Conv2d(256, 256, kernel_size=3, stride=1)  # 새로운 합성곱 레이어
+        super(MobileNetDuelingQNet, self).__init__()
+
+        # MobileNet Convolutional Layers
+        self.conv1 = nn.Conv2d(4, 16, kernel_size=3, stride=2, padding=1)
+        self.bn1 = nn.BatchNorm2d(16)
+        self.relu = nn.ReLU(inplace=True)
+
+        # Depthwise Separable Convolutions
+        self.conv2 = DepthwiseSeparableConv(16, 32, kernel_size=3, stride=2, padding=1)
+        self.conv3 = DepthwiseSeparableConv(32, 64, kernel_size=3, stride=2, padding=1)
+        self.conv4 = DepthwiseSeparableConv(64, 64, kernel_size=3, stride=1, padding=1)
+        self.conv5 = DepthwiseSeparableConv(64, 128, kernel_size=3, stride=2, padding=1)
+        self.conv6 = DepthwiseSeparableConv(
+            128, 128, kernel_size=3, stride=1, padding=1
+        )
+        # 추가 레이어
+        self.conv7 = DepthwiseSeparableConv(
+            128, 256, kernel_size=3, stride=2, padding=1
+        )
+        self.conv8 = DepthwiseSeparableConv(
+            256, 256, kernel_size=3, stride=1, padding=1
+        )
+        self.conv9 = DepthwiseSeparableConv(
+            256, 512, kernel_size=3, stride=2, padding=1
+        )
 
         # Separate streams for value and advantage
         self.fc_value = nn.Linear(self._feature_size(), 512)
@@ -136,19 +169,35 @@ class DuelingQnet(nn.Module):
         # Temporary data processing to calculate CNN output size
         return (
             nn.Sequential(
-                self.conv1, self.pool1, self.conv2, self.pool2, self.conv3, self.conv4
+                self.conv1,
+                self.bn1,
+                self.relu,
+                self.conv2,
+                self.conv3,
+                self.conv4,
+                self.conv5,
+                self.conv6,
+                self.conv7,
+                self.conv8,
+                self.conv9,
             )
-            .forward(torch.zeros(1, 4, 210, 160))
+            .forward(torch.zeros(1, 4, 84, 84))
             .view(1, -1)
             .size(1)
         )
 
     def forward(self, x):
-        # Forward pass through convolutional layers
-        x = F.relu(self.pool1(self.conv1(x)))
-        x = F.relu(self.pool2(self.conv2(x)))
-        x = F.relu(self.conv3(x))
-        x = F.relu(self.conv4(x))
+        # Forward pass through MobileNet layers
+        x = self.relu(self.bn1(self.conv1(x)))
+        x = self.conv2(x)
+        x = self.conv3(x)
+        x = self.conv4(x)
+        x = self.conv5(x)
+        x = self.conv6(x)
+        x = self.conv7(x)
+        x = self.conv8(x)
+        x = self.conv9(x)
+
         x = x.view(x.size(0), -1)  # Flatten
 
         # Separate value and advantage streams
@@ -243,7 +292,7 @@ transform = T.Compose(
     [
         T.ToPILImage(),
         T.Grayscale(num_output_channels=1),
-        T.Resize((210, 160)),
+        T.Resize((84, 84)),
         T.ToTensor(),
     ]
 )
@@ -263,7 +312,7 @@ frame_queue = deque(maxlen=4)
 # 프레임을 초기화하는 함수
 def init_frames():
     for _ in range(4):
-        frame_queue.append(torch.zeros(210, 160))
+        frame_queue.append(torch.zeros(84, 84))
 
 
 # 메인 함수 정의
@@ -273,8 +322,8 @@ def main():
         #    , render_mode="human"
     )  # 환경 초기화
     # 모델을 GPU로 이동
-    q = DuelingQnet(6).to(device)
-    q_target = DuelingQnet(6).to(device)
+    q = MobileNetDuelingQNet(6).to(device)
+    q_target = MobileNetDuelingQNet(6).to(device)
     q_target.load_state_dict(q.state_dict())
 
     # memory = ReplayBuffer() 대신에 아래 코드 사용
@@ -285,13 +334,13 @@ def main():
     average_score = 0.0
 
     # 최적화 함수 설정
-    optimizer = optim.Adam(q.parameters(), lr=0.1)  # 초기 학습률 설정
+    optimizer = optim.RMSprop(q.parameters(), lr=0.5)  # 초기 학습률 설정
 
     # CosineAnnealingLR 스케줄러 초기화
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
-        T_max=2000,
-        eta_min=0.0005,
+        T_max=500,
+        eta_min=0.01,
     )
 
     scores = []  # 에피소드별 점수 저장 리스트
@@ -309,7 +358,7 @@ def main():
     checkpoint_interval = 100  # 체크포인트 저장 간격
 
     for n_epi in range(start_episode, 3001):
-        epsilon = max(0.005, 0.08 - 0.01 * (n_epi / 200))  # 탐험률 조정
+        epsilon = max(0.01, 0.1 - 0.01 * (n_epi / 250))  # 탐험률 조정
         s, _ = env.reset()
         init_frames()  # 프레임 큐 초기화
         frame_queue.append(preprocess(s))  # 첫 프레임 추가
@@ -329,7 +378,7 @@ def main():
 
             # 이전 코드의 memory.put(...) 대신에 아래 코드 사용
             # 초기 우선순위를 지정합니다. 예를 들어, 일정한 값으로 시작할 수 있습니다.
-            initial_priority = 1.0
+            initial_priority = 0.01
             memory.put(
                 (current_state, a, r / 100.0, next_state, done_mask), initial_priority
             )

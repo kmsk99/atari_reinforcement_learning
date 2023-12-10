@@ -19,8 +19,8 @@ from torch.utils.data import WeightedRandomSampler
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # 하이퍼파라미터 설정
-gamma = 0.9999  # 할인계수
-buffer_limit = 30_000  # 버퍼 크기
+gamma = 0.99  # 할인계수
+buffer_limit = 100_000  # 버퍼 크기
 batch_size = 32  # 배치 크기
 
 # 현재 스크립트의 경로를 찾습니다.
@@ -113,55 +113,32 @@ class PrioritizedReplayBuffer:
         return len(self.buffer)  # 버퍼 크기 반환
 
 
-class DuelingQnet(nn.Module):
+class Qnet(nn.Module):
     def __init__(self, num_actions):
-        super(DuelingQnet, self).__init__()
-        # Convolutional layers
-        self.conv1 = nn.Conv2d(4, 64, kernel_size=9, stride=3)
-        self.pool1 = nn.MaxPool2d(3, 2)  # 새로운 풀링 레이어 추가
-        self.conv2 = nn.Conv2d(64, 128, kernel_size=5, stride=1)
-        self.pool2 = nn.MaxPool2d(3, 2)  # 새로운 풀링 레이어 추가
-        self.conv3 = nn.Conv2d(128, 256, kernel_size=3, stride=1)  # 필터 수 증가
-        self.conv4 = nn.Conv2d(256, 256, kernel_size=3, stride=1)  # 새로운 합성곱 레이어
+        super(Qnet, self).__init__()
+        self.conv1 = nn.Conv2d(4, 32, kernel_size=8, stride=4)  # 입력 채널이 4 (84x84x4)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
 
-        # Separate streams for value and advantage
-        self.fc_value = nn.Linear(self._feature_size(), 512)
-        self.fc_advantage = nn.Linear(self._feature_size(), 512)
-
-        # Output layers for value and advantage streams
-        self.value_output = nn.Linear(512, 1)
-        self.advantage_output = nn.Linear(512, num_actions)
+        self.fc1 = nn.Linear(self._feature_size(), 512)  # 최종 연결 레이어에 대한 입력 크기를 계산
+        self.fc2 = nn.Linear(512, num_actions)  # 출력 크기는 행동 수에 해당
 
     def _feature_size(self):
-        # Temporary data processing to calculate CNN output size
+        # CNN 출력 크기 계산을 위한 임시 데이터 처리
         return (
-            nn.Sequential(
-                self.conv1, self.pool1, self.conv2, self.pool2, self.conv3, self.conv4
-            )
-            .forward(torch.zeros(1, 4, 210, 160))
+            nn.Sequential(self.conv1, self.conv2, self.conv3)
+            .forward(torch.zeros(1, 4, 84, 84))
             .view(1, -1)
             .size(1)
         )
 
     def forward(self, x):
-        # Forward pass through convolutional layers
-        x = F.relu(self.pool1(self.conv1(x)))
-        x = F.relu(self.pool2(self.conv2(x)))
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
-        x = F.relu(self.conv4(x))
         x = x.view(x.size(0), -1)  # Flatten
-
-        # Separate value and advantage streams
-        value = F.relu(self.fc_value(x))
-        advantage = F.relu(self.fc_advantage(x))
-
-        # Compute the value and advantage outputs
-        value = self.value_output(value)
-        advantage = self.advantage_output(advantage)
-
-        # Combine value and advantage to get final Q-value
-        q_value = value + advantage - advantage.mean(dim=1, keepdim=True)
-        return q_value
+        x = F.relu(self.fc1(x))
+        return self.fc2(x)
 
     def sample_action(self, obs, epsilon):
         # 행동 선택 메서드
@@ -243,7 +220,7 @@ transform = T.Compose(
     [
         T.ToPILImage(),
         T.Grayscale(num_output_channels=1),
-        T.Resize((210, 160)),
+        T.Resize((84, 84)),
         T.ToTensor(),
     ]
 )
@@ -263,7 +240,7 @@ frame_queue = deque(maxlen=4)
 # 프레임을 초기화하는 함수
 def init_frames():
     for _ in range(4):
-        frame_queue.append(torch.zeros(210, 160))
+        frame_queue.append(torch.zeros(84, 84))
 
 
 # 메인 함수 정의
@@ -273,26 +250,19 @@ def main():
         #    , render_mode="human"
     )  # 환경 초기화
     # 모델을 GPU로 이동
-    q = DuelingQnet(6).to(device)
-    q_target = DuelingQnet(6).to(device)
+    q = Qnet(6).to(device)
+    q_target = Qnet(6).to(device)
     q_target.load_state_dict(q.state_dict())
 
     # memory = ReplayBuffer() 대신에 아래 코드 사용
     memory = PrioritizedReplayBuffer()
 
-    print_interval = 20
+    print_interval = 100
     score = 0.0
     average_score = 0.0
 
     # 최적화 함수 설정
-    optimizer = optim.Adam(q.parameters(), lr=0.1)  # 초기 학습률 설정
-
-    # CosineAnnealingLR 스케줄러 초기화
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=2000,
-        eta_min=0.0005,
-    )
+    optimizer = optim.RMSprop(q.parameters(), lr=0.00025)  # 초기 학습률 설정
 
     scores = []  # 에피소드별 점수 저장 리스트
 
@@ -309,7 +279,7 @@ def main():
     checkpoint_interval = 100  # 체크포인트 저장 간격
 
     for n_epi in range(start_episode, 3001):
-        epsilon = max(0.005, 0.08 - 0.01 * (n_epi / 200))  # 탐험률 조정
+        epsilon = max(0.1, 1 - (n_epi / 1000))  # 탐험률 조정
         s, _ = env.reset()
         init_frames()  # 프레임 큐 초기화
         frame_queue.append(preprocess(s))  # 첫 프레임 추가
@@ -329,7 +299,7 @@ def main():
 
             # 이전 코드의 memory.put(...) 대신에 아래 코드 사용
             # 초기 우선순위를 지정합니다. 예를 들어, 일정한 값으로 시작할 수 있습니다.
-            initial_priority = 1.0
+            initial_priority = 1
             memory.put(
                 (current_state, a, r / 100.0, next_state, done_mask), initial_priority
             )
@@ -343,7 +313,6 @@ def main():
 
         if memory.size() > 1000:
             train(q, q_target, memory, optimizer)
-            scheduler.step()  # 에피소드마다 학습률 업데이트
 
         if n_epi % print_interval == 0 and n_epi != 0:
             q_target.load_state_dict(q.state_dict())
