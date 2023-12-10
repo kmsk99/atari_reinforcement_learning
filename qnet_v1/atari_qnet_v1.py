@@ -243,57 +243,77 @@ def main(render):
 
     checkpoint_interval = 100  # 체크포인트 저장 간격
 
-    for n_epi in range(start_episode, 3001):
-        epsilon = max(0.005, 0.08 - 0.01 * (n_epi / 200))  # 탐험률 조정
-        s, _ = env.reset()
-        done = False
-
-        while not done:
-            a = q.sample_action(torch.from_numpy(s).float(), epsilon)
-            s_prime, r, terminated, truncated, info = env.step(a)
-            done = terminated or truncated
-            done_mask = 0.0 if done else 1.0
-            memory.put((s, a, r / 100.0, s_prime, done_mask))
-            s = s_prime
-
-            score += r
-            average_score += r
-            if done:
-                break
-
-        if memory.size() > 1000:
-            train(q, q_target, memory, optimizer)
-
-        if n_epi % print_interval == 0 and n_epi != 0:
-            q_target.load_state_dict(q.state_dict())
-            print(
-                "n_episode :{}, score : {:.1f}, n_buffer : {}, eps : {:.1f}%".format(
-                    n_epi, average_score / print_interval, memory.size(), epsilon * 100
-                )
-            )
-            average_score = 0.0
-
-        scores.append(score)  # 점수 저장
-        score = 0
-
-        # 매 10번째 에피소드마다 그래프 업데이트 및 저장
-        if n_epi % 10 == 0:
+    if render:
+        # 렌더링 모드일 때의 로직
+        for _ in range(1):  # 한 번만 실행
+            s, _ = env.reset()
+            done = False
             plot_scores(scores, "score_plot.png")
+            while not done:  # 현재 상태를 4개 프레임으로 구성
+                a = q.sample_action(torch.from_numpy(s).float(), 0)
+                s_prime, r, terminated, truncated, info = env.step(a)
+                done = terminated or truncated
+                done_mask = 0.0 if done else 1.0
+                memory.put((s, a, r / 100.0, s_prime, done_mask))
+                s = s_prime
 
-        # 체크포인트 저장
-        if n_epi % checkpoint_interval == 0 and n_epi != 0:
-            save_checkpoint(
-                {
-                    "model_state": q.state_dict(),
-                    "target_model_state": q_target.state_dict(),
-                    "optimizer_state": optimizer.state_dict(),
-                    "episode": n_epi,  # 현재 에피소드 번호 저장
-                },
-                n_epi,
-                scores,
-            )
+                if done:
+                    break
+    else:
+        for n_epi in range(start_episode, 3001):
+            epsilon = max(0.005, 0.08 - 0.01 * (n_epi / 200))  # 탐험률 조정
+            s, _ = env.reset()
+            done = False
 
-    env.close()
+            while not done:
+                a = q.sample_action(torch.from_numpy(s).float(), epsilon)
+                s_prime, r, terminated, truncated, info = env.step(a)
+                done = terminated or truncated
+                done_mask = 0.0 if done else 1.0
+                memory.put((s, a, r / 100.0, s_prime, done_mask))
+                s = s_prime
+
+                score += r
+                average_score += r
+                if done:
+                    break
+
+            if memory.size() > 1000:
+                train(q, q_target, memory, optimizer)
+
+            if n_epi % print_interval == 0 and n_epi != 0:
+                q_target.load_state_dict(q.state_dict())
+                print(
+                    "n_episode :{}, score : {:.1f}, n_buffer : {}, eps : {:.1f}%".format(
+                        n_epi,
+                        average_score / print_interval,
+                        memory.size(),
+                        epsilon * 100,
+                    )
+                )
+                average_score = 0.0
+
+            scores.append(score)  # 점수 저장
+            score = 0
+
+            # 매 10번째 에피소드마다 그래프 업데이트 및 저장
+            if n_epi % 10 == 0:
+                plot_scores(scores, "score_plot.png")
+
+            # 체크포인트 저장
+            if n_epi % checkpoint_interval == 0 and n_epi != 0:
+                save_checkpoint(
+                    {
+                        "model_state": q.state_dict(),
+                        "target_model_state": q_target.state_dict(),
+                        "optimizer_state": optimizer.state_dict(),
+                        "episode": n_epi,  # 현재 에피소드 번호 저장
+                    },
+                    n_epi,
+                    scores,
+                )
+
+        env.close()
 
 
 if __name__ == "__main__":
