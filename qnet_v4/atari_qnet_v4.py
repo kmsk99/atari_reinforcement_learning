@@ -19,8 +19,8 @@ from torch.utils.data import WeightedRandomSampler
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # 하이퍼파라미터 설정
-gamma = 0.998  # 할인계수
-buffer_limit = 100_000  # 버퍼 크기
+gamma = 0.9999  # 할인계수
+buffer_limit = 30_000  # 버퍼 크기
 batch_size = 32  # 배치 크기
 
 # 현재 스크립트의 경로를 찾습니다.
@@ -106,9 +106,12 @@ class DuelingQnet(nn.Module):
     def __init__(self, num_actions):
         super(DuelingQnet, self).__init__()
         # Convolutional layers
-        self.conv1 = nn.Conv2d(4, 32, kernel_size=8, stride=4)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+        self.conv1 = nn.Conv2d(4, 64, kernel_size=9, stride=3)
+        self.pool1 = nn.MaxPool2d(3, 2)  # 새로운 풀링 레이어 추가
+        self.conv2 = nn.Conv2d(64, 128, kernel_size=5, stride=1)
+        self.pool2 = nn.MaxPool2d(3, 2)  # 새로운 풀링 레이어 추가
+        self.conv3 = nn.Conv2d(128, 256, kernel_size=3, stride=1)  # 필터 수 증가
+        self.conv4 = nn.Conv2d(256, 256, kernel_size=3, stride=1)  # 새로운 합성곱 레이어
 
         # Separate streams for value and advantage
         self.fc_value = nn.Linear(self._feature_size(), 512)
@@ -121,17 +124,20 @@ class DuelingQnet(nn.Module):
     def _feature_size(self):
         # Temporary data processing to calculate CNN output size
         return (
-            nn.Sequential(self.conv1, self.conv2, self.conv3)
-            .forward(torch.zeros(1, 4, 84, 84))
+            nn.Sequential(
+                self.conv1, self.pool1, self.conv2, self.pool2, self.conv3, self.conv4
+            )
+            .forward(torch.zeros(1, 4, 210, 160))
             .view(1, -1)
             .size(1)
         )
 
     def forward(self, x):
         # Forward pass through convolutional layers
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
+        x = F.relu(self.pool1(self.conv1(x)))
+        x = F.relu(self.pool2(self.conv2(x)))
         x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
         x = x.view(x.size(0), -1)  # Flatten
 
         # Separate value and advantage streams
@@ -226,7 +232,7 @@ transform = T.Compose(
     [
         T.ToPILImage(),
         T.Grayscale(num_output_channels=1),
-        T.Resize((84, 84)),
+        T.Resize((210, 160)),
         T.ToTensor(),
     ]
 )
@@ -246,12 +252,15 @@ frame_queue = deque(maxlen=4)
 # 프레임을 초기화하는 함수
 def init_frames():
     for _ in range(4):
-        frame_queue.append(torch.zeros(84, 84))
+        frame_queue.append(torch.zeros(210, 160))
 
 
 # 메인 함수 정의
 def main():
-    env = gym.make("ALE/SpaceInvaders-v5", render_mode="human")  # 환경 초기화
+    env = gym.make(
+        "ALE/SpaceInvaders-v5"
+        #    , render_mode="human"
+    )  # 환경 초기화
     # 모델을 GPU로 이동
     q = DuelingQnet(6).to(device)
     q_target = DuelingQnet(6).to(device)

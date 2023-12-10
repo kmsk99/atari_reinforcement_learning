@@ -19,7 +19,7 @@ from torch.utils.data import WeightedRandomSampler
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # 하이퍼파라미터 설정
-gamma = 0.998  # 할인계수
+gamma = 0.9999  # 할인계수
 buffer_limit = 100_000  # 버퍼 크기
 batch_size = 32  # 배치 크기
 
@@ -102,13 +102,42 @@ class PrioritizedReplayBuffer:
         return len(self.buffer)  # 버퍼 크기 반환
 
 
-class DuelingQnet(nn.Module):
+class DepthwiseSeparableConv(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride, padding):
+        super(DepthwiseSeparableConv, self).__init__()
+        self.depthwise = nn.Conv2d(
+            in_channels, in_channels, kernel_size, stride, padding, groups=in_channels
+        )
+        self.pointwise = nn.Conv2d(in_channels, out_channels, 1, 1, 0)
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        x = self.depthwise(x)
+        x = self.pointwise(x)
+        x = self.bn(x)
+        return self.relu(x)
+
+
+class MobileNetDuelingQNet(nn.Module):
     def __init__(self, num_actions):
-        super(DuelingQnet, self).__init__()
-        # Convolutional layers
-        self.conv1 = nn.Conv2d(4, 32, kernel_size=8, stride=4)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+        super(MobileNetDuelingQNet, self).__init__()
+
+        # MobileNet Convolutional Layers
+        self.conv1 = nn.Conv2d(
+            4, 16, kernel_size=3, stride=2, padding=1
+        )  # First layer is a standard conv2d
+        self.bn1 = nn.BatchNorm2d(16)
+        self.relu = nn.ReLU(inplace=True)
+
+        # Depthwise Separable Convolutions
+        self.conv2 = DepthwiseSeparableConv(16, 32, kernel_size=3, stride=2, padding=1)
+        self.conv3 = DepthwiseSeparableConv(32, 64, kernel_size=3, stride=2, padding=1)
+        self.conv4 = DepthwiseSeparableConv(64, 64, kernel_size=3, stride=1, padding=1)
+        self.conv5 = DepthwiseSeparableConv(64, 128, kernel_size=3, stride=2, padding=1)
+        self.conv6 = DepthwiseSeparableConv(
+            128, 128, kernel_size=3, stride=1, padding=1
+        )
 
         # Separate streams for value and advantage
         self.fc_value = nn.Linear(self._feature_size(), 512)
@@ -121,17 +150,29 @@ class DuelingQnet(nn.Module):
     def _feature_size(self):
         # Temporary data processing to calculate CNN output size
         return (
-            nn.Sequential(self.conv1, self.conv2, self.conv3)
+            nn.Sequential(
+                self.conv1,
+                self.bn1,
+                self.relu,
+                self.conv2,
+                self.conv3,
+                self.conv4,
+                self.conv5,
+                self.conv6,
+            )
             .forward(torch.zeros(1, 4, 84, 84))
             .view(1, -1)
             .size(1)
         )
 
     def forward(self, x):
-        # Forward pass through convolutional layers
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
+        # Forward pass through MobileNet layers
+        x = self.relu(self.bn1(self.conv1(x)))
+        x = self.conv2(x)
+        x = self.conv3(x)
+        x = self.conv4(x)
+        x = self.conv5(x)
+        x = self.conv6(x)
         x = x.view(x.size(0), -1)  # Flatten
 
         # Separate value and advantage streams
@@ -251,10 +292,13 @@ def init_frames():
 
 # 메인 함수 정의
 def main():
-    env = gym.make("ALE/SpaceInvaders-v5", render_mode="human")  # 환경 초기화
+    env = gym.make(
+        "ALE/SpaceInvaders-v5"
+        #    , render_mode="human"
+    )  # 환경 초기화
     # 모델을 GPU로 이동
-    q = DuelingQnet(6).to(device)
-    q_target = DuelingQnet(6).to(device)
+    q = MobileNetDuelingQNet(6).to(device)
+    q_target = MobileNetDuelingQNet(6).to(device)
     q_target.load_state_dict(q.state_dict())
 
     # memory = ReplayBuffer() 대신에 아래 코드 사용
