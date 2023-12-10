@@ -2,6 +2,7 @@
 import glob
 import re
 import random
+import argparse
 import os
 import gymnasium as gym
 import collections
@@ -233,10 +234,9 @@ def calc_returns(rewards):
 
 
 # 메인 함수 정의
-def main():
+def main(render):
     env = gym.make(
-        "ALE/SpaceInvaders-v5"
-        #    , render_mode="human"
+        "ALE/SpaceInvaders-v5", render_mode="human" if render else None
     )  # 환경 초기화
     # 모델을 GPU로 이동
     policy_net = PolicyNet(6).to(device)
@@ -351,4 +351,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--render",
+        action="store_true",
+        help="Render the environment to visualize the agent's performance.",
+    )
+    args = parser.parse_args()
+
+    main(args.render)

@@ -46,29 +46,42 @@
    cd [저장소 디렉토리]
    ```
 
-2.
-3. [실행 방법 3]
+2. 실행할 파일을 파이썬으로 실행합니다:
 
-## 사용 예시
+   ```
+   python policynet_v1\policynet_v1.py
 
-여기에 강화학습 모델을 어떻게 훈련시키고 테스트하는지에 대한 예시 코드나 명령어를 제공합니다.
+   python qnet_v1\atari_qnet_v1.py
 
-```
-python train.py --env [환경 이름] --epochs 100
-```
+   python qnet_v2\atari_qnet_v2.py
 
-## 기여하기
+   python qnet_v3\atari_qnet_v3.py
 
-[프로젝트에 기여하는 방법에 대한 지침]
+   python qnet_v4\atari_qnet_v4.py
 
-## 라이선스
+   python qnet_v5\atari_qnet_v5.py
 
-이 프로젝트는 [라이선스 이름] 라이선스를 따릅니다. 자세한 내용은 `LICENSE` 파일을 참고하세요.
+   python qnet_v6\atari_qnet_v6.py
 
-## 연락처
+   python qnet_v7\atari_qnet_v7.py
+   ```
 
-[연락처 정보 - 이메일, LinkedIn, 기타 SNS 등]
+3. 학습된 파일을 테스트하려면 다음과 같이 실행합니다:
 
----
+   ```
+   python policynet_v1\policynet_v1.py --render
 
-이 예시는 프로젝트의 개요, 시작 방법, 사용 예시, 기여 방법 및 연락처 정보를 포함하고 있습니다. 프로젝트의 특성에 맞게 내용을 수정하여 사용하세요.
+   python qnet_v1\atari_qnet_v1.py --render
+
+   python qnet_v2\atari_qnet_v2.py --render
+
+   python qnet_v3\atari_qnet_v3.py --render
+
+   python qnet_v4\atari_qnet_v4.py --render
+
+   python qnet_v5\atari_qnet_v5.py --render
+
+   python qnet_v6\atari_qnet_v6.py --render
+
+   python qnet_v7\atari_qnet_v7.py --render
+   ```

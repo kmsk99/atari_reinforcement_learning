@@ -2,6 +2,7 @@
 import glob
 import re
 import random
+import argparse
 import os
 import gymnasium as gym
 import collections
@@ -188,11 +189,15 @@ def train(q, q_target, memory, optimizer):
 # 그래프 그리기 및 저장 함수 업데이트
 def plot_scores(scores, filename):
     plt.figure(figsize=(12, 6))
-    plt.plot(scores, label="Score", color="blue")
+    # plt.plot(scores, label="Score", color="green")
+
+    # scores 배열이 2000개를 초과하는 경우 첫 2000개 요소로 제한
+    if len(scores) > 2000:
+        scores = scores[:2000]
 
     # 10개 이동평균 계산
     moving_avg_10 = [np.mean(scores[max(0, i - 9) : i + 1]) for i in range(len(scores))]
-    plt.plot(moving_avg_10, label="10-episode Moving Avg", color="green")
+    plt.plot(moving_avg_10, label="10-episode Moving Avg", color="blue")
 
     # 50개 이동평균 계산
     moving_avg_50 = [
@@ -209,10 +214,9 @@ def plot_scores(scores, filename):
 
 
 # 메인 함수 정의
-def main():
+def main(render):
     env = gym.make(
-        "ALE/SpaceInvaders-v5"
-        #    , render_mode="human"
+        "ALE/SpaceInvaders-v5", render_mode="human" if render else None
     )  # 환경 초기화
     # 모델을 GPU로 이동
     q = Qnet().to(device)
@@ -293,4 +297,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--render",
+        action="store_true",
+        help="Render the environment to visualize the agent's performance.",
+    )
+    args = parser.parse_args()
+
+    main(args.render)

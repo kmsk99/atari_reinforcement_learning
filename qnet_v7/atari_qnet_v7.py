@@ -2,6 +2,7 @@
 import glob
 import re
 import random
+import argparse
 import os
 import gymnasium as gym
 import collections
@@ -11,7 +12,6 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
-from PIL import Image
 import torchvision.transforms as T
 from torch.utils.data import WeightedRandomSampler
 
@@ -120,8 +120,13 @@ class Qnet(nn.Module):
         self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
 
-        self.fc1 = nn.Linear(self._feature_size(), 512)  # 최종 연결 레이어에 대한 입력 크기를 계산
-        self.fc2 = nn.Linear(512, num_actions)  # 출력 크기는 행동 수에 해당
+        # Separate streams for value and advantage
+        self.fc_value = nn.Linear(self._feature_size(), 512)
+        self.fc_advantage = nn.Linear(self._feature_size(), 512)
+
+        # Output layers for value and advantage streams
+        self.value_output = nn.Linear(512, 1)
+        self.advantage_output = nn.Linear(512, num_actions)
 
     def _feature_size(self):
         # CNN 출력 크기 계산을 위한 임시 데이터 처리
@@ -137,8 +142,18 @@ class Qnet(nn.Module):
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
         x = x.view(x.size(0), -1)  # Flatten
-        x = F.relu(self.fc1(x))
-        return self.fc2(x)
+
+        # Separate value and advantage streams
+        value = F.relu(self.fc_value(x))
+        advantage = F.relu(self.fc_advantage(x))
+
+        # Compute the value and advantage outputs
+        value = self.value_output(value)
+        advantage = self.advantage_output(advantage)
+
+        # Combine value and advantage to get final Q-value
+        q_value = value + advantage - advantage.mean(dim=1, keepdim=True)
+        return q_value
 
     def sample_action(self, obs, epsilon):
         # 행동 선택 메서드
@@ -196,11 +211,15 @@ def train(q, q_target, memory, optimizer):
 # 그래프 그리기 및 저장 함수 업데이트
 def plot_scores(scores, filename):
     plt.figure(figsize=(12, 6))
-    plt.plot(scores, label="Score", color="blue")
+    # plt.plot(scores, label="Score", color="green")
+
+    # scores 배열이 2000개를 초과하는 경우 첫 2000개 요소로 제한
+    if len(scores) > 2000:
+        scores = scores[:2000]
 
     # 10개 이동평균 계산
     moving_avg_10 = [np.mean(scores[max(0, i - 9) : i + 1]) for i in range(len(scores))]
-    plt.plot(moving_avg_10, label="10-episode Moving Avg", color="green")
+    plt.plot(moving_avg_10, label="10-episode Moving Avg", color="blue")
 
     # 50개 이동평균 계산
     moving_avg_50 = [
@@ -244,10 +263,9 @@ def init_frames():
 
 
 # 메인 함수 정의
-def main():
+def main(render):
     env = gym.make(
-        "ALE/SpaceInvaders-v5"
-        #    , render_mode="human"
+        "ALE/SpaceInvaders-v5", render_mode="human" if render else None
     )  # 환경 초기화
     # 모델을 GPU로 이동
     q = Qnet(6).to(device)
@@ -262,7 +280,7 @@ def main():
     average_score = 0.0
 
     # 최적화 함수 설정
-    optimizer = optim.RMSprop(q.parameters(), lr=0.00025)  # 초기 학습률 설정
+    optimizer = optim.RMSprop(q.parameters(), lr=0.01)  # 초기 학습률 설정
 
     scores = []  # 에피소드별 점수 저장 리스트
 
@@ -278,73 +296,107 @@ def main():
 
     checkpoint_interval = 100  # 체크포인트 저장 간격
 
-    for n_epi in range(start_episode, 3001):
-        epsilon = max(0.1, 1 - (n_epi / 1000))  # 탐험률 조정
-        s, _ = env.reset()
-        init_frames()  # 프레임 큐 초기화
-        frame_queue.append(preprocess(s))  # 첫 프레임 추가
-        done = False
-
-        while not done:
-            # 현재 상태를 4개 프레임으로 구성
-            current_state = torch.stack(list(frame_queue), dim=0)
-
-            a = q.sample_action(current_state, epsilon)
-            s_prime, r, terminated, truncated, info = env.step(a)
-            done = terminated or truncated
-            frame_queue.append(preprocess(s_prime))  # 새 프레임 추가
-            next_state = torch.stack(list(frame_queue), dim=0)
-
-            done_mask = 0.0 if done else 1.0
-
-            # 이전 코드의 memory.put(...) 대신에 아래 코드 사용
-            # 초기 우선순위를 지정합니다. 예를 들어, 일정한 값으로 시작할 수 있습니다.
-            initial_priority = 1
-            memory.put(
-                (current_state, a, r / 100.0, next_state, done_mask), initial_priority
-            )
-
-            s = s_prime
-
-            score += r
-            average_score += r
-            if done:
-                break
-
-        if memory.size() > 1000:
-            train(q, q_target, memory, optimizer)
-
-        if n_epi % print_interval == 0 and n_epi != 0:
-            q_target.load_state_dict(q.state_dict())
-            print(
-                "n_episode :{}, score : {:.1f}, n_buffer : {}, eps : {:.1f}%".format(
-                    n_epi, average_score / print_interval, memory.size(), epsilon * 100
-                )
-            )
-            average_score = 0.0
-
-        scores.append(score)  # 점수 저장
-        score = 0
-
-        # 매 10번째 에피소드마다 그래프 업데이트 및 저장
-        if n_epi % 10 == 0:
+    if render:
+        # 렌더링 모드일 때의 로직
+        for _ in range(1):  # 한 번만 실행
+            s, _ = env.reset()
+            init_frames()
+            frame_queue.append(preprocess(s))
+            done = False
             plot_scores(scores, "score_plot.png")
+            while not done:  # 현재 상태를 4개 프레임으로 구성
+                current_state = torch.stack(list(frame_queue), dim=0)
 
-        # 체크포인트 저장
-        if n_epi % checkpoint_interval == 0 and n_epi != 0:
-            save_checkpoint(
-                {
-                    "model_state": q.state_dict(),
-                    "target_model_state": q_target.state_dict(),
-                    "optimizer_state": optimizer.state_dict(),
-                    "episode": n_epi,  # 현재 에피소드 번호 저장
-                },
-                n_epi,
-                scores,
-            )
+                a = q.sample_action(current_state, 0)
+                print(a)
+                s_prime, r, terminated, truncated, info = env.step(a)
+                done = terminated or truncated
+                frame_queue.append(preprocess(s_prime))  # 새 프레임 추가
 
-    env.close()
+                s = s_prime
+
+                if done:
+                    break
+    else:
+        for n_epi in range(start_episode, 3001):
+            epsilon = max(0.1, 1 - (n_epi / 1000))  # 탐험률 조정
+            s, _ = env.reset()
+            init_frames()  # 프레임 큐 초기화
+            frame_queue.append(preprocess(s))  # 첫 프레임 추가
+            done = False
+
+            while not done:
+                # 현재 상태를 4개 프레임으로 구성
+                current_state = torch.stack(list(frame_queue), dim=0)
+
+                a = q.sample_action(current_state, epsilon)
+                s_prime, r, terminated, truncated, info = env.step(a)
+                done = terminated or truncated
+                frame_queue.append(preprocess(s_prime))  # 새 프레임 추가
+                next_state = torch.stack(list(frame_queue), dim=0)
+
+                done_mask = 0.0 if done else 1.0
+
+                # 이전 코드의 memory.put(...) 대신에 아래 코드 사용
+                # 초기 우선순위를 지정합니다. 예를 들어, 일정한 값으로 시작할 수 있습니다.
+                initial_priority = 1
+                memory.put(
+                    (current_state, a, r / 100.0, next_state, done_mask),
+                    initial_priority,
+                )
+
+                s = s_prime
+
+                score += r
+                average_score += r
+                if done:
+                    break
+
+            if memory.size() > 1000:
+                train(q, q_target, memory, optimizer)
+
+            if n_epi % print_interval == 0 and n_epi != 0:
+                q_target.load_state_dict(q.state_dict())
+                print(
+                    "n_episode :{}, score : {:.1f}, n_buffer : {}, eps : {:.1f}%".format(
+                        n_epi,
+                        average_score / print_interval,
+                        memory.size(),
+                        epsilon * 100,
+                    )
+                )
+                average_score = 0.0
+
+            scores.append(score)  # 점수 저장
+            score = 0
+
+            # 매 10번째 에피소드마다 그래프 업데이트 및 저장
+            if n_epi % 10 == 0:
+                plot_scores(scores, "score_plot.png")
+
+            # 체크포인트 저장
+            if n_epi % checkpoint_interval == 0 and n_epi != 0:
+                save_checkpoint(
+                    {
+                        "model_state": q.state_dict(),
+                        "target_model_state": q_target.state_dict(),
+                        "optimizer_state": optimizer.state_dict(),
+                        "episode": n_epi,  # 현재 에피소드 번호 저장
+                    },
+                    n_epi,
+                    scores,
+                )
+
+        env.close()
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--render",
+        action="store_true",
+        help="Render the environment to visualize the agent's performance.",
+    )
+    args = parser.parse_args()
+
+    main(args.render)
