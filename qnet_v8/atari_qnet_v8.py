@@ -138,14 +138,14 @@ class Qnet(nn.Module):
         )
 
     def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
+        x = F.tanh(self.conv1(x))
+        x = F.tanh(self.conv2(x))
+        x = F.tanh(self.conv3(x))
         x = x.view(x.size(0), -1)  # Flatten
 
         # Separate value and advantage streams
-        value = F.relu(self.fc_value(x))
-        advantage = F.relu(self.fc_advantage(x))
+        value = F.tanh(self.fc_value(x))
+        advantage = F.tanh(self.fc_advantage(x))
 
         # Compute the value and advantage outputs
         value = self.value_output(value)
@@ -174,38 +174,37 @@ class Qnet(nn.Module):
 
 # 훈련 함수 정의
 def train(q, q_target, memory, optimizer):
-    for i in range(10):
-        s, a, r, s_prime, done_mask, indices = memory.sample(batch_size)
+    s, a, r, s_prime, done_mask, indices = memory.sample(batch_size)
 
-        # GPU로 이동
-        s = s.float().to(device)
-        s_prime = s_prime.float().to(device)
-        r = r.float().to(device)
-        done_mask = done_mask.float().to(device)
-        a = a.to(device)
+    # GPU로 이동
+    s = s.float().to(device)
+    s_prime = s_prime.float().to(device)
+    r = r.float().to(device)
+    done_mask = done_mask.float().to(device)
+    a = a.to(device)
 
-        q_out = q(s)
-        q_a = q_out.gather(1, a)
+    q_out = q(s)
+    q_a = q_out.gather(1, a)
 
-        # Double DQN 구현
-        argmax_Q = q(s_prime).max(1)[1].unsqueeze(1)
-        max_q_prime = q_target(s_prime).gather(1, argmax_Q)
+    # Double DQN 구현
+    argmax_Q = q(s_prime).max(1)[1].unsqueeze(1)
+    max_q_prime = q_target(s_prime).gather(1, argmax_Q)
 
-        target = r + gamma * max_q_prime * done_mask
+    target = r + gamma * max_q_prime * done_mask
 
-        # Huber 손실 함수 계산 및 역전파
-        loss = F.smooth_l1_loss(q_a, target)  # Huber 손실 사용
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+    # Huber 손실 함수 계산 및 역전파
+    loss = F.smooth_l1_loss(q_a, target)  # Huber 손실 사용
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
 
-        # TD 오류 계산
-        with torch.no_grad():
-            td_error = torch.abs(q_a - target)
+    # TD 오류 계산
+    # with torch.no_grad():
+    #     td_error = torch.abs(q_a - target)
 
-        # 우선순위 업데이트
-        for idx, error in zip(indices, td_error):
-            memory.update_priority(idx, error.item())
+    # # 우선순위 업데이트
+    # for idx, error in zip(indices, td_error):
+    #     memory.update_priority(idx, error.item())
 
 
 # 그래프 그리기 및 저장 함수 업데이트
@@ -214,8 +213,8 @@ def plot_scores(scores, filename):
     # plt.plot(scores, label="Score", color="green")
 
     # scores 배열이 2000개를 초과하는 경우 첫 2000개 요소로 제한
-    if len(scores) > 2000:
-        scores = scores[:2000]
+    # if len(scores) > 2000:
+    #     scores = scores[:2000]
 
     # 10개 이동평균 계산
     moving_avg_10 = [np.mean(scores[max(0, i - 9) : i + 1]) for i in range(len(scores))]
@@ -276,11 +275,12 @@ def main(render):
     memory = PrioritizedReplayBuffer()
 
     print_interval = 100
+    train_interval = 4
     score = 0.0
     average_score = 0.0
 
     # 최적화 함수 설정
-    optimizer = optim.RMSprop(q.parameters(), lr=0.01)  # 초기 학습률 설정
+    optimizer = optim.RMSprop(q.parameters(), lr=0.001)  # 초기 학습률 설정
 
     scores = []  # 에피소드별 점수 저장 리스트
 
@@ -318,8 +318,8 @@ def main(render):
                 if done:
                     break
     else:
-        for n_epi in range(start_episode, 3001):
-            epsilon = max(0.01, 1 - (n_epi / 1000))  # 탐험률 조정
+        for n_epi in range(start_episode, 100001):
+            epsilon = max(0.1, 1 - (n_epi / 1000))  # 탐험률 조정
             s, _ = env.reset()
             init_frames()  # 프레임 큐 초기화
             frame_queue.append(preprocess(s))  # 첫 프레임 추가
@@ -353,7 +353,8 @@ def main(render):
                     break
 
             if memory.size() > 1000:
-                train(q, q_target, memory, optimizer)
+                if n_epi % train_interval == 0:
+                    train(q, q_target, memory, optimizer)
 
             if n_epi % print_interval == 0 and n_epi != 0:
                 q_target.load_state_dict(q.state_dict())
