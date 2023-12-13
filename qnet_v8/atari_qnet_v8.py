@@ -319,44 +319,34 @@ def main(render):
                     break
     else:
         for n_epi in range(start_episode, 100001):
-            frame_count = 0  # 행동을 선택하기 위한 프레임 카운터
             epsilon = max(0.1, 1 - (n_epi / 1000))  # 탐험률 조정
             s, _ = env.reset()
             init_frames()  # 프레임 큐 초기화
             frame_queue.append(preprocess(s))  # 첫 프레임 추가
             done = False
-            r_sum = 0  # 4 프레임마다 얻는 보상의 합
 
             while not done:
                 # 현재 상태를 4개 프레임으로 구성
                 current_state = torch.stack(list(frame_queue), dim=0)
 
-                # 4 프레임마다 한 번씩 행동을 선택
-                if frame_count % 4 == 0:
-                    a = q.sample_action(current_state, epsilon)
-                else:
-                    a = 0  # 아무런 행동도 하지 않음
-
+                a = q.sample_action(current_state, epsilon)
                 s_prime, r, terminated, truncated, info = env.step(a)
                 done = terminated or truncated
                 frame_queue.append(preprocess(s_prime))  # 새 프레임 추가
                 next_state = torch.stack(list(frame_queue), dim=0)
-                r_sum += r
+
+                done_mask = 0.0 if done else 1.0
 
                 # 이전 코드의 memory.put(...) 대신에 아래 코드 사용
                 # 초기 우선순위를 지정합니다. 예를 들어, 일정한 값으로 시작할 수 있습니다.
-                if frame_count % 4 == 0 or done:
-                    done_mask = 0.0 if done else 1.0
-                    initial_priority = 1
-                    memory.put(
-                        (current_state, a, r / 100.0, next_state, done_mask),
-                        initial_priority,
-                    )
-                    r_sum = 0
+                initial_priority = 1
+                memory.put(
+                    (current_state, a, r / 100.0, next_state, done_mask),
+                    initial_priority,
+                )
 
                 s = s_prime
 
-                frame_count += 1  # 프레임 카운터 증가
                 score += r
                 average_score += r
                 if done:

@@ -1,5 +1,6 @@
 # 라이브러리 임포트
 import glob
+import math
 import re
 import random
 import argparse
@@ -20,7 +21,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # 하이퍼파라미터 설정
 gamma = 0.99  # 할인계수
-buffer_limit = 100_000  # 버퍼 크기
+buffer_limit = 50_000  # 버퍼 크기
 batch_size = 32  # 배치 크기
 
 # 현재 스크립트의 경로를 찾습니다.
@@ -138,14 +139,14 @@ class Qnet(nn.Module):
         )
 
     def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
+        x = F.tanh(self.conv1(x))
+        x = F.tanh(self.conv2(x))
+        x = F.tanh(self.conv3(x))
         x = x.view(x.size(0), -1)  # Flatten
 
         # Separate value and advantage streams
-        value = F.relu(self.fc_value(x))
-        advantage = F.relu(self.fc_advantage(x))
+        value = F.tanh(self.fc_value(x))
+        advantage = F.tanh(self.fc_advantage(x))
 
         # Compute the value and advantage outputs
         value = self.value_output(value)
@@ -200,12 +201,12 @@ def train(q, q_target, memory, optimizer):
         optimizer.step()
 
         # TD 오류 계산
-        with torch.no_grad():
-            td_error = torch.abs(q_a - target)
+        # with torch.no_grad():
+        #     td_error = torch.abs(q_a - target)
 
-        # 우선순위 업데이트
-        for idx, error in zip(indices, td_error):
-            memory.update_priority(idx, error.item())
+        # # 우선순위 업데이트
+        # for idx, error in zip(indices, td_error):
+        #     memory.update_priority(idx, error.item())
 
 
 # 그래프 그리기 및 저장 함수 업데이트
@@ -265,7 +266,7 @@ def init_frames():
 # 메인 함수 정의
 def main(render):
     env = gym.make(
-        "ALE/SpaceInvaders-v5", render_mode="human" if render else None
+        "SpaceInvadersDeterministic-v4", render_mode="human" if render else None
     )  # 환경 초기화
     # 모델을 GPU로 이동
     q = Qnet(6).to(device)
@@ -275,7 +276,9 @@ def main(render):
     # memory = ReplayBuffer() 대신에 아래 코드 사용
     memory = PrioritizedReplayBuffer()
 
-    print_interval = 100
+    print_interval = 10
+    target_update_interval = 50
+    train_interval = 4
     score = 0.0
     average_score = 0.0
 
@@ -319,7 +322,7 @@ def main(render):
                     break
     else:
         for n_epi in range(start_episode, 100001):
-            epsilon = max(0.01, 1 - (n_epi / 1000))  # 탐험률 조정
+            epsilon = max(0.0001, math.exp(-n_epi / 1000))  # 탐험률 조정
             s, _ = env.reset()
             init_frames()  # 프레임 큐 초기화
             frame_queue.append(preprocess(s))  # 첫 프레임 추가
@@ -353,10 +356,10 @@ def main(render):
                     break
 
             if memory.size() > 1000:
-                train(q, q_target, memory, optimizer)
+                if n_epi % train_interval == 0:
+                    train(q, q_target, memory, optimizer)
 
-            if n_epi % print_interval == 0 and n_epi != 0:
-                q_target.load_state_dict(q.state_dict())
+            if n_epi % print_interval == 0:
                 print(
                     "n_episode :{}, score : {:.1f}, n_buffer : {}, eps : {:.1f}%".format(
                         n_epi,
@@ -366,6 +369,9 @@ def main(render):
                     )
                 )
                 average_score = 0.0
+
+            if n_epi % target_update_interval == 0:
+                q_target.load_state_dict(q.state_dict())
 
             scores.append(score)  # 점수 저장
             score = 0
