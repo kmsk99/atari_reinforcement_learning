@@ -43,33 +43,44 @@ os.makedirs(os.path.join(current_script_path, "layers"), exist_ok=True)
 class Qnet(nn.Module):
     def __init__(self, num_actions):
         super(Qnet, self).__init__()
-        self.conv1 = nn.Conv2d(4, 32, kernel_size=8, stride=4)  # 입력 채널이 4 (84x84x4)
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=8, stride=4)  # 입력 채널이 4 (84x84x1)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
 
-        self.flatten = nn.Flatten()
-
         self.fc1 = nn.Linear(self._feature_size(), 512)
         self.fc2 = nn.Linear(512, num_actions)
+
+        self.l1 = nn.Sequential(
+            self.conv1,
+            nn.ReLU(),
+            self.conv2,
+            nn.ReLU(),
+            self.conv3,
+            nn.ReLU(),
+        )
+
+        # Two fully connected layers with one relu activation
+        self.l2 = nn.Sequential(
+            self.fc1,
+            nn.ReLU(),
+            self.fc2,
+        )
 
     def _feature_size(self):
         # CNN 출력 크기 계산을 위한 임시 데이터 처리
         return (
             nn.Sequential(self.conv1, self.conv2, self.conv3)
-            .forward(torch.zeros(1, 4, 84, 84))
+            .forward(torch.zeros(1, 1, 84, 84))
             .view(1, -1)
             .size(1)
         )
 
     def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
-        x = self.flatten(x)
+        x = self.l1(x)
+        x = x.view(x.shape[0], -1)
+        actions = self.l2(x)
 
-        x = F.relu(self.fc1(x))
-        x = self.fc2(x)
-        return x
+        return actions
 
     def sample_action(self, obs, epsilon):
         # 행동 선택 메서드
@@ -150,7 +161,7 @@ def main(render):
 
     q.register_hooks(["conv1", "conv2", "conv3"])  # 훅 등록
 
-    frame_queue = deque(maxlen=4)
+    frame_queue = deque(maxlen=1)
 
     # 프레임을 초기화하는 함수
     def init_frames():
@@ -167,7 +178,7 @@ def main(render):
     average_score = 0.0
 
     # 최적화 함수 설정
-    optimizer = optim.RMSprop(q.parameters(), lr=0.001)  # 초기 학습률 설정
+    optimizer = optim.Adam(q.parameters(), lr=0.001)  # 초기 학습률 설정
 
     scores = []  # 에피소드별 점수 저장 리스트
 
