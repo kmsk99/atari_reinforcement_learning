@@ -74,7 +74,7 @@ class PrioritizedReplayBuffer:
         self.device = device
         self.cumulative_reward = 0.01  # 누적 보상 초기화
 
-    def put(self, transition, set_priority=True):
+    def put(self, transition, set_priority=False):
         s, a, r, s_prime, done_mask = transition
         if set_priority == True:
             self.cumulative_reward += r  # 누적 보상 갱신
@@ -135,11 +135,17 @@ def plot_scores(scores, filename):
     moving_avg_10 = [np.mean(scores[max(0, i - 9) : i + 1]) for i in range(len(scores))]
     plt.plot(moving_avg_10, label="10-episode Moving Avg", color="blue")
 
-    # 50개 이동평균 계산
-    moving_avg_50 = [
-        np.mean(scores[max(0, i - 49) : i + 1]) for i in range(len(scores))
+    # 100개 이동평균 계산
+    moving_avg_100 = [
+        np.mean(scores[max(0, i - 99) : i + 1]) for i in range(len(scores))
     ]
-    plt.plot(moving_avg_50, label="50-episode Moving Avg", color="red")
+    plt.plot(moving_avg_100, label="100-episode Moving Avg", color="yellow")
+
+    # 1000개 이동평균 계산
+    moving_avg_1000 = [
+        np.mean(scores[max(0, i - 999) : i + 1]) for i in range(len(scores))
+    ]
+    plt.plot(moving_avg_1000, label="1000-episode Moving Avg", color="red")
 
     plt.xlabel("Episode")
     plt.ylabel("Score")

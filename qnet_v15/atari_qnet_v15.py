@@ -165,8 +165,7 @@ def main(render):
 
     # 프레임을 초기화하는 함수
     def init_frames():
-        for _ in range(4):
-            frame_queue.append(torch.zeros(84, 84))
+        frame_queue.append(torch.zeros(84, 84))
 
     # memory = ReplayBuffer() 대신에 아래 코드 사용
     memory = PrioritizedReplayBuffer(buffer_limit, device)
@@ -178,7 +177,7 @@ def main(render):
     average_score = 0.0
 
     # 최적화 함수 설정
-    optimizer = optim.Adam(q.parameters(), lr=0.001)  # 초기 학습률 설정
+    optimizer = optim.Adam(q.parameters(), lr=0.01)  # 초기 학습률 설정
 
     scores = []  # 에피소드별 점수 저장 리스트
 
@@ -202,10 +201,10 @@ def main(render):
             frame_queue.append(preprocess(s))
             done = False
             plot_scores(scores, "score_plot.png")
-            while not done:  # 현재 상태를 4개 프레임으로 구성
+            while not done:  # 현재 상태를 1개 프레임으로 구성
                 current_state = torch.stack(list(frame_queue), dim=0)
 
-                a = q.sample_action(current_state, 0.0)
+                a = q.sample_action(current_state, 0.1)
                 s_prime, r, terminated, truncated, info = env.step(a)
                 done = terminated or truncated
                 frame_queue.append(preprocess(s_prime, s))  # 새 프레임 추가
@@ -215,7 +214,7 @@ def main(render):
                     break
     else:
         for n_epi in range(start_episode, 100001):
-            epsilon = max(0.01, math.exp(-n_epi / 2000))  # 탐험률 조정
+            epsilon = max(0.1, math.exp(-n_epi / 2000))  # 탐험률 조정
             s, _ = env.reset()
             init_frames()  # 프레임 큐 초기화
             frame_queue.append(preprocess(s))  # 첫 프레임 추가
