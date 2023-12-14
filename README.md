@@ -1,8 +1,8 @@
-# Reinforcement Learning Project - SpaceInvaders
+# Reinforcement Learning Project - Atari Game
 
 ## 소개
 
-이 프로젝트는 강화학습 알고리즘을 이용하여 SpaceInvaders에서 고득점을 얻는 강화학습 모델을 학습시키는 것을 목표로 합니다.
+이 프로젝트는 강화학습 알고리즘을 이용하여 Atari Game에서 고득점을 얻는 강화학습 모델을 학습시키는 것을 목표로 합니다.
 
 ## 시작하기
 
