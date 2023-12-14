@@ -219,7 +219,9 @@ def main(render):
                     break
 
             # GIF 생성
-            imageio.mimsave(f"game_play_{idx+1}.gif", frames, fps=30)  # fps는 필요에 따라 조정
+            imageio.mimsave(
+                f"gameplay/Breakout_game_play_{idx+1}.gif", frames, fps=30
+            )  # fps는 필요에 따라 조정
 
     else:
         for n_epi in range(start_episode, 100_001):

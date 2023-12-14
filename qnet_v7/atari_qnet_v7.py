@@ -6,6 +6,7 @@ import argparse
 import os
 import gymnasium as gym
 import collections
+import imageio
 import numpy as np
 import torch
 import torch.nn as nn
@@ -265,7 +266,7 @@ def init_frames():
 # 메인 함수 정의
 def main(render):
     env = gym.make(
-        "ALE/SpaceInvaders-v5", render_mode="human" if render else None
+        "ALE/SpaceInvaders-v5", render_mode="rgb_array" if render else None
     )  # 환경 초기화
     # 모델을 GPU로 이동
     q = Qnet(6).to(device)
@@ -298,7 +299,8 @@ def main(render):
 
     if render:
         # 렌더링 모드일 때의 로직
-        for _ in range(1):  # 한 번만 실행
+        for idx in range(10):  # 10번의 에피소드 동안 게임 플레이
+            frames = []  # GIF에 사용될 프레임을 저장할 리스트
             s, _ = env.reset()
             init_frames()
             frame_queue.append(preprocess(s))
@@ -307,9 +309,9 @@ def main(render):
             while not done:  # 현재 상태를 4개 프레임으로 구성
                 current_state = torch.stack(list(frame_queue), dim=0)
 
-                a = q.sample_action(current_state, 0)
-                print(a)
+                a = q.sample_action(current_state, 0.1)
                 s_prime, r, terminated, truncated, info = env.step(a)
+                frames.append(env.render())  # 현재 화면을 frames에 추가
                 done = terminated or truncated
                 frame_queue.append(preprocess(s_prime))  # 새 프레임 추가
 
@@ -317,6 +319,11 @@ def main(render):
 
                 if done:
                     break
+
+            # GIF 생성
+            imageio.mimsave(
+                f"gameplay/SpaceInvaders_game_play_{idx+1}.gif", frames, fps=30
+            )  # fps는 필요에 따라 조정
     else:
         for n_epi in range(start_episode, 100001):
             epsilon = max(0.01, 1 - (n_epi / 1000))  # 탐험률 조정
