@@ -180,7 +180,7 @@ def main(render):
     average_score = 0.0
 
     # 최적화 함수 설정
-    optimizer = optim.Adam(q.parameters(), lr=0.001)  # 초기 학습률 설정
+    optimizer = optim.Adam(q.parameters(), lr=0.01)  # 초기 학습률 설정
 
     scores = []  # 에피소드별 점수 저장 리스트
 
