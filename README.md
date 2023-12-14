@@ -32,6 +32,12 @@
    conda env create -f environment_window.yml
    ```
 
+3. 설치된 라이브러리를 활성화합니다:
+
+   ```
+   conda activate [환경 이름]
+   ```
+
 ### 실행 방법
 
 1. 저장소 디렉토리로 이동합니다:
