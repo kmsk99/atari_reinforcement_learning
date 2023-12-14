@@ -43,39 +43,11 @@
 2. 실행할 파일을 파이썬으로 실행합니다:
 
    ```
-   python policynet_v1\policynet_v1.py
-
-   python qnet_v1\atari_qnet_v1.py
-
-   python qnet_v2\atari_qnet_v2.py
-
-   python qnet_v3\atari_qnet_v3.py
-
-   python qnet_v4\atari_qnet_v4.py
-
-   python qnet_v5\atari_qnet_v5.py
-
-   python qnet_v6\atari_qnet_v6.py
-
-   python qnet_v7\atari_qnet_v7.py
+   python qnet_v15\atari_qnet_v15.py
    ```
 
 3. 학습된 파일을 테스트하려면 다음과 같이 실행합니다:
 
    ```
-   python policynet_v1\policynet_v1.py --render
-
-   python qnet_v1\atari_qnet_v1.py --render
-
-   python qnet_v2\atari_qnet_v2.py --render
-
-   python qnet_v3\atari_qnet_v3.py --render
-
-   python qnet_v4\atari_qnet_v4.py --render
-
-   python qnet_v5\atari_qnet_v5.py --render
-
-   python qnet_v6\atari_qnet_v6.py --render
-
-   python qnet_v7\atari_qnet_v7.py --render
+   python qnet_v15\atari_qnet_v15.py --render
    ```
