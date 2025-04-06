@@ -1,4 +1,4 @@
-name: c:\Users\momoq\Documents\atari_reinforcement\atari
+name: atari
 channels:
   - pytorch
   - nvidia
