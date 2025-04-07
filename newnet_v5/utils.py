@@ -76,7 +76,14 @@ def load_checkpoint(checkpoint_dir=checkpoint_dir):
     )
 
     latest_checkpoint = checkpoints[-1]  # 가장 최근의 체크포인트
+    # 파일 이름에서 에피소드 번호 추출
+    episode_number = extract_number(latest_checkpoint)
+    
     checkpoint = torch.load(latest_checkpoint)
+    # 체크포인트에 에피소드 번호 추가
+    if "state" in checkpoint and isinstance(checkpoint["state"], dict):
+        checkpoint["state"]["episode"] = episode_number
+    
     return checkpoint["state"], checkpoint["scores"]
 
 
@@ -222,7 +229,16 @@ def visualize_layer_output(model, layer_name, save_path, epoch):
     plt.close()
 
 
-def preprocess(frame1, frame2=None):
+def preprocess(frame):
+    """
+    프레임을 전처리합니다.
+    
+    Args:
+        frame: 원본 RGB 프레임
+        
+    Returns:
+        전처리된 그레이스케일 프레임 (84x84)
+    """
     transform = T.Compose(
         [
             T.ToPILImage(),
@@ -232,8 +248,5 @@ def preprocess(frame1, frame2=None):
             T.ToTensor(),
         ]
     )
-    if frame2 is not None:
-        new_frame = 1.667 * (transform(frame2) - 0.4 * transform(frame1))
-    else:
-        new_frame = transform(frame1)
-    return new_frame.squeeze(0)  # 배치 차원 제거
+    
+    return transform(frame).squeeze(0)  # 배치 차원 제거

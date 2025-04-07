@@ -30,7 +30,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 GAMMA = 0.99  # 할인계수
 LAMBDA = 0.95  # GAE 람다
 BATCH_SIZE = 32  # 배치 크기
-NUM_ENVS = 16  # 병렬 환경 개수
+NUM_ENVS = 32  # 병렬 환경 개수
 LEARNING_RATE = 0.00025  # 학습률
 PPO_EPOCHS = 4  # PPO 업데이트 에포크
 PPO_EPSILON = 0.2  # PPO 클리핑 파라미터
@@ -54,9 +54,9 @@ class PPONet(nn.Module):
     def __init__(self, num_actions):
         super(PPONet, self).__init__()
         # CNN 특징 추출기 (기존과 동일)
-        # 입력 크기: 84x84x1
+        # 입력 크기: 84x84x4 (4개 프레임 스택)
         # 출력 크기: 32x20x20
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=8, stride=4)
+        self.conv1 = nn.Conv2d(4, 32, kernel_size=8, stride=4)
         # 입력 크기: 32x20x20
         # 출력 크기: 64x9x9
         self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
@@ -198,6 +198,11 @@ def train_ppo(model, optimizer, scaler, observations, actions, log_probs, return
 def make_env(env_id, render=False):
     def _thunk():
         env = gym.make(env_id, render_mode="rgb_array" if render else None)
+        # 전처리 래퍼 적용
+        env = gym.wrappers.GrayScaleObservation(env, keep_dim=False)
+        env = gym.wrappers.ResizeObservation(env, (84, 84))
+        # 프레임 스택 래퍼 적용 (4개 프레임 스택)
+        env = gym.wrappers.FrameStack(env, 4)
         return env
     return _thunk
 
@@ -212,13 +217,10 @@ def save_gameplay_gif(model, episode_num, save_path=os.path.join(current_script_
         episode_num: 현재 에피소드 번호
         save_path: GIF를 저장할 경로
     """
-    env = gym.make("ALE/Breakout-v5", render_mode="rgb_array")
+    # 전처리와 프레임 스택이 적용된 환경 생성
+    env = make_env("ALE/Breakout-v5", render=True)()
     frames = []
-    s, _ = env.reset()
-    
-    # 프레임 큐 초기화
-    frame_queue = deque(maxlen=1)
-    frame_queue.append(preprocess(s))
+    obs, _ = env.reset()
     
     done = False
     total_reward = 0
@@ -228,13 +230,16 @@ def save_gameplay_gif(model, episode_num, save_path=os.path.join(current_script_
         if done:
             break
             
-        current_state = torch.stack(list(frame_queue), dim=0).unsqueeze(0)
+        # obs는 이미 스택된 프레임 형태이므로 바로 사용
+        # numpy 배열을 PyTorch 텐서로 변환
+        obs_tensor = torch.FloatTensor(np.array(obs)).unsqueeze(0).to(device)
+        
         # 행동 선택
         with torch.no_grad():
-            action, _, _, _ = model.get_action_and_value(current_state)
+            action, _, _, _ = model.get_action_and_value(obs_tensor)
             action = action.cpu().item()
         
-        s_prime, r, terminated, truncated, info = env.step(action)
+        next_obs, r, terminated, truncated, info = env.step(action)
         
         # 렌더링된 프레임 저장
         frames.append(env.render())
@@ -242,9 +247,8 @@ def save_gameplay_gif(model, episode_num, save_path=os.path.join(current_script_
         done = terminated or truncated
         total_reward += r
         
-        # 다음 프레임 저장
-        frame_queue.append(preprocess(s_prime, s))
-        s = s_prime
+        # 다음 상태로 업데이트
+        obs = next_obs
     
     env.close()
     
@@ -328,11 +332,11 @@ def compute_gae(rewards, values, dones, next_value, gamma=GAMMA, lam=LAMBDA):
 # 메인 함수 정의
 def main(render):
     if render:
-        # 렌더링 모드에서는 단일 환경만 사용
-        env = gym.make("ALE/Breakout-v5", render_mode="rgb_array")
+        # 렌더링 모드에서는 단일 환경만 사용 (프레임 스택 적용)
+        env = make_env("ALE/Breakout-v5", render=True)()
         num_envs = 1
     else:
-        # 훈련 모드에서는 병렬 환경 사용
+        # 훈련 모드에서는 병렬 환경 사용 (각 환경에 프레임 스택 적용)
         envs = AsyncVectorEnv([make_env("ALE/Breakout-v5") for _ in range(NUM_ENVS)])
         num_envs = NUM_ENVS
     
@@ -340,7 +344,7 @@ def main(render):
     if render:
         num_actions = env.action_space.n
     else:
-        sample_env = gym.make("ALE/Breakout-v5")
+        sample_env = make_env("ALE/Breakout-v5")()
         num_actions = sample_env.action_space.n
         sample_env.close()
     
@@ -356,6 +360,7 @@ def main(render):
     saved_scores = []
     checkpoint, loaded_scores = load_checkpoint()
     start_episode = 0
+    episode_count = 0
     
     if checkpoint:
         if "model_state" in checkpoint:
@@ -366,18 +371,17 @@ def main(render):
             scaler.load_state_dict(checkpoint["scaler_state"])
         if "episode" in checkpoint:
             start_episode = checkpoint["episode"]
+            episode_count = start_episode  # 에피소드 카운터도 체크포인트 에피소드 번호로 초기화
         if loaded_scores is not None:
             saved_scores = loaded_scores
+            
+    print(f"체크포인트 로드 완료. 에피소드 {start_episode}부터 시작합니다.")
 
     if render:
         # 렌더링 모드일 때 평가 수행
         for idx in range(10):
             frames = []
-            s, _ = env.reset()
-            
-            # 프레임 큐 초기화
-            frame_queue = deque(maxlen=1)
-            frame_queue.append(preprocess(s))
+            obs, _ = env.reset()
             
             done = False
             total_reward = 0
@@ -385,21 +389,21 @@ def main(render):
             plot_scores(saved_scores, "score_plot.png")
             
             while not done:
-                current_state = torch.stack(list(frame_queue), dim=0).unsqueeze(0)
+                # obs는 이미 스택된 프레임 형태이므로 바로 사용
+                obs_tensor = torch.FloatTensor(np.array(obs)).unsqueeze(0).to(device)
                 
                 # 행동 선택
                 with torch.no_grad():
-                    action, _, _, _ = model.get_action_and_value(current_state)
+                    action, _, _, _ = model.get_action_and_value(obs_tensor)
                     action = action.cpu().item()
                 
-                s_prime, r, terminated, truncated, info = env.step(action)
+                next_obs, r, terminated, truncated, info = env.step(action)
                 frames.append(env.render())
                 
                 done = terminated or truncated
                 total_reward += r
                 
-                frame_queue.append(preprocess(s_prime, s))
-                s = s_prime
+                obs = next_obs
 
             print(f"평가 에피소드 {idx+1} 완료. 획득 점수: {total_reward}")
             imageio.mimsave(f"gameplay/Breakout_game_play_{idx+1}.gif", frames, fps=30)
@@ -409,13 +413,7 @@ def main(render):
         # 초기 상태 설정
         states, _ = envs.reset()
         
-        # 각 환경의 프레임 큐 초기화
-        frame_queues = [deque(maxlen=1) for _ in range(num_envs)]
-        for i in range(num_envs):
-            frame_queues[i].append(preprocess(states[i]))
-        
         # 훈련 통계 초기화
-        episode_count = 0
         total_steps = 0
         episode_rewards = [0.0 for _ in range(num_envs)]  # 각 환경별 보상 합계
         episode_lengths = [0 for _ in range(num_envs)]  # 각 환경별 에피소드 길이
@@ -442,8 +440,9 @@ def main(render):
             for step in range(STEPS_PER_UPDATE):
                 total_steps += num_envs
                 
-                # 현재 상태 배치 구성
-                current_states = torch.stack([torch.stack(list(frame_queues[i]), dim=0) for i in range(num_envs)]).to(device)
+                # 상태를 PyTorch 텐서로 변환
+                # states는 벡터 환경의 출력으로, 각 환경마다 이미 4개의 프레임이 스택된 상태
+                current_states = torch.FloatTensor(np.array(states)).to(device)
                 
                 # 모델로부터 행동, 로그 확률, 엔트로피, 가치 얻기
                 with torch.no_grad():
@@ -479,6 +478,15 @@ def main(render):
                                 last_plot_episode = episode_count
                                 print(f"Episode {episode_count}: 그래프 및 시각화 업데이트 중...")
                                 plot_scores(saved_scores, "score_plot.png")
+                                
+                                # 임의의 입력을 사용하여 레이어 활성화 시각화를 위한 순전파 수행
+                                # 벡터 환경에서 첫 번째 환경의 현재 상태 사용
+                                sample_state = torch.FloatTensor(np.array(states[0])).unsqueeze(0).to(device)
+                                with torch.no_grad():
+                                    # 순전파를 수행하여 활성화 값 생성
+                                    model(sample_state)
+                                
+                                # 시각화 호출
                                 visualize_filters(model, "conv1", epoch=episode_count, save_path=current_script_path)
                                 visualize_filters(model, "conv2", epoch=episode_count, save_path=current_script_path)
                                 visualize_filters(model, "conv3", epoch=episode_count, save_path=current_script_path)
@@ -510,10 +518,6 @@ def main(render):
                                 )
                                 print(f"에피소드 {episode_count}: 체크포인트 저장 완료")
                 
-                # 다음 프레임을 프레임 큐에 추가
-                for i in range(num_envs):
-                    frame_queues[i].append(preprocess(next_states[i], states[i]))
-                
                 # 데이터 저장 - 모두 같은 장치(CPU)에 저장
                 observations.append(current_states.cpu())
                 actions.append(actions_tensor.cpu())
@@ -526,7 +530,7 @@ def main(render):
                 states = next_states
             
             # 마지막 상태의 가치 계산 (부트스트래핑)
-            final_states = torch.stack([torch.stack(list(frame_queues[i]), dim=0) for i in range(num_envs)]).to(device)
+            final_states = torch.FloatTensor(np.array(states)).to(device)
             with torch.no_grad():
                 _, _, _, next_value = model.get_action_and_value(final_states)
                 next_value = next_value.cpu()  # CPU로 이동
