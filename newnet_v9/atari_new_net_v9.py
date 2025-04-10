@@ -14,7 +14,6 @@ import torch.nn.functional as F
 from collections import deque
 from torch.cuda.amp import autocast, GradScaler  # 혼합 정밀도 학습을 위한 임포트
 from torch.distributions import Categorical
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 from utils import (
     load_checkpoint,
     plot_scores,
@@ -23,6 +22,8 @@ from utils import (
     visualize_filters,
     visualize_layer_output,
 )
+from datetime import datetime
+import pytz
 
 # CUDA 사용 가능 여부 확인
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -31,9 +32,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 GAMMA = 0.99  # 할인계수
 LAMBDA = 0.95  # GAE 람다
 BATCH_SIZE = 32  # 배치 크기
-NUM_ENVS = 32  # 병렬 환경 개수
-LEARNING_RATE = 0.01  # 학습률
-MIN_LEARNING_RATE = LEARNING_RATE * 0.0001  # 최소 학습률 (기본 학습률의 0.01%)
+NUM_ENVS = 8  # 병렬 환경 개수
+LEARNING_RATE = 0.005  # 학습률
 PPO_EPOCHS = 4  # PPO 업데이트 에포크
 PPO_EPSILON = 0.2  # PPO 클리핑 파라미터
 ENTROPY_COEF = 0.01  # 엔트로피 계수
@@ -137,7 +137,7 @@ class PPONet(nn.Module):
 
 
 # PPO 업데이트 함수
-def train_ppo(model, optimizer, scaler, scheduler, observations, actions, log_probs, returns, advantages):
+def train_ppo(model, optimizer, scaler, observations, actions, log_probs, returns, advantages):
     # 데이터셋을 배치로 나누어 여러 번 훈련
     for _ in range(PPO_EPOCHS):
         # 데이터 전체를 미니배치로 나누기
@@ -194,9 +194,6 @@ def train_ppo(model, optimizer, scaler, scheduler, observations, actions, log_pr
             
             scaler.step(optimizer)
             scaler.update()
-            
-            # 스케줄러 업데이트
-            scheduler.step(loss)
 
 
 # 벡터 환경 생성 함수
@@ -336,6 +333,9 @@ def compute_gae(rewards, values, dones, next_value, gamma=GAMMA, lam=LAMBDA):
 
 # 메인 함수 정의
 def main(render):
+    # 한국 시간대 설정
+    korea_tz = pytz.timezone('Asia/Seoul')
+    
     if render:
         # 렌더링 모드에서는 단일 환경만 사용 (프레임 스택 적용)
         env = make_env("ALE/Breakout-v5", render=True)()
@@ -359,15 +359,8 @@ def main(render):
 
     # Optimizer와 Scheduler 초기화
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999)  # 매 에피소드마다 0.9999배 감소
     scaler = GradScaler()  # 혼합 정밀도 학습을 위한 GradScaler 초기화
-    scheduler = ReduceLROnPlateau(
-        optimizer, 
-        mode='min', 
-        factor=0.5, 
-        patience=100, 
-        verbose=True,
-        min_lr=MIN_LEARNING_RATE
-    )
 
     # 체크포인트 로드 시도
     saved_scores = []
@@ -384,17 +377,19 @@ def main(render):
             scaler.load_state_dict(checkpoint["scaler_state"])
         if "scheduler_state" in checkpoint:
             scheduler.load_state_dict(checkpoint["scheduler_state"])
-        if "learning_rate" in checkpoint:
-            # 명시적으로 저장된 학습률 복원
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = checkpoint["learning_rate"]
-            print(f"학습률 복원: {checkpoint['learning_rate']}")
         if "episode" in checkpoint:
             start_episode = checkpoint["episode"]
-            episode_count = start_episode  # 에피소드 카운터도 체크포인트 에피소드 번호로 초기화
-        if loaded_scores is not None:
+            episode_count = start_episode
+        if loaded_scores is not None and len(loaded_scores) > 0:
             saved_scores = loaded_scores
-            
+            print(f"이전 점수 기록 로드 완료: {len(saved_scores)}개")
+        else:
+            print("이전 점수 기록이 없습니다. 새로운 학습을 시작합니다.")
+            saved_scores = []
+    else:
+        print("체크포인트가 없습니다. 새로운 학습을 시작합니다.")
+        saved_scores = []
+
     print(f"체크포인트 로드 완료. 에피소드 {start_episode}부터 시작합니다.")
 
     if render:
@@ -485,7 +480,8 @@ def main(render):
                     # 에피소드가 끝났으면 통계 저장하고 재설정
                     if dones_np[i]:
                         saved_scores.append(episode_rewards[i])
-                        print(f"Episode {episode_count}: 환경 {i}에서 점수 {episode_rewards[i]:.1f}, 길이 {episode_lengths[i]}")
+                        current_time = datetime.now(korea_tz).strftime("%m-%d %H:%M:%S")
+                        print(f"[{current_time}] Episode {episode_count}: 환경 {i}에서 점수 {episode_rewards[i]:.1f}, 길이 {episode_lengths[i]}")
                         episode_rewards[i] = 0.0
                         episode_lengths[i] = 0
                         episode_count += 1
@@ -525,9 +521,6 @@ def main(render):
                                 reward = save_gameplay_gif(model, episode_count)
                                 print(f"에피소드 {episode_count} 게임 플레이 GIF 저장 완료. 획득 점수: {reward}")
                                 
-                                # 현재 학습률 가져오기
-                                current_lr = optimizer.param_groups[0]['lr']
-                                
                                 # 동시에 체크포인트도 저장
                                 save_checkpoint(
                                     {
@@ -535,13 +528,12 @@ def main(render):
                                         "optimizer_state": optimizer.state_dict(),
                                         "scaler_state": scaler.state_dict(),
                                         "scheduler_state": scheduler.state_dict(),
-                                        "learning_rate": current_lr,  # 현재 학습률 명시적 저장
                                         "episode": n_epi,
                                     },
                                     episode_count,
                                     saved_scores,
                                 )
-                                print(f"에피소드 {episode_count}: 체크포인트 저장 완료 (현재 학습률: {current_lr})")
+                                print(f"에피소드 {episode_count}: 체크포인트 저장 완료")
                 
                 # 데이터 저장 - 모두 같은 장치(CPU)에 저장
                 observations.append(current_states.cpu())
@@ -577,12 +569,18 @@ def main(render):
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
             
             # PPO 업데이트
-            train_ppo(model, optimizer, scaler, scheduler, observations, actions, log_probs, returns, advantages)
+            train_ppo(model, optimizer, scaler, observations, actions, log_probs, returns, advantages)
+            
+            # 학습률 스케줄러 업데이트
+            scheduler.step()
             
             # 터미널 출력에 학습 진행 상황 표시
             if n_epi % 10 == 0:
-                current_lr = optimizer.param_groups[0]['lr']
-                print(f"업데이트 {n_epi}: 스텝 {total_steps}, 에피소드 {episode_count}, 최근 10개 에피소드 평균 점수: {np.mean(saved_scores[-10:]):.1f}, 현재 학습률: {current_lr:.6f}")
+                current_lr = scheduler.get_last_lr()[0]
+                current_time = datetime.now(korea_tz).strftime("%m-%d %H:%M:%S")
+                recent_scores = saved_scores[-10:] if len(saved_scores) > 0 else [0.0]
+                avg_score = np.mean(recent_scores)
+                print(f"[{current_time}] 업데이트 {n_epi}: 스텝 {total_steps}, 에피소드 {episode_count}, 최근 10개 에피소드 평균 점수: {avg_score:.1f}, 현재 학습률: {current_lr:.6f}")
             
             # 상태 업데이트
             states = next_states

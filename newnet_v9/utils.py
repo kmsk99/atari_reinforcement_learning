@@ -15,11 +15,21 @@ import torch.optim as optim
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import torchvision.transforms as T
-import csv
 from torch.utils.data import WeightedRandomSampler
 
 # 하이퍼파라미터 설정
 GAMMA = 0.99
+# PPO 알고리즘으로 변경하면서 필요없어진 상수들 제거
+# MEMORY_SIZE = 900000
+# BATCH_SIZE = 32
+# TRAINING_FREQUENCY = 4
+# TARGET_NETWORK_UPDATE_FREQUENCY = 40000
+# MODEL_PERSISTENCE_UPDATE_FREQUENCY = 5000
+# REPLAY_START_SIZE = 50000
+# EXPLORATION_MAX = 1.0
+# EXPLORATION_MIN = 0.1
+# EXPLORATION_TEST = 0.02
+# EXPLORATION_STEPS = 850000
 
 # 현재 스크립트의 경로를 찾습니다.
 current_script_path = os.path.dirname(os.path.realpath(__file__))
@@ -164,22 +174,6 @@ def plot_scores(scores, filename):
     plt.legend()
     plt.savefig(os.path.join(current_script_path, filename))
     plt.close()
-    
-    # CSV 파일로 원본 점수 데이터 저장
-    csv_filename = os.path.splitext(filename)[0] + '.csv'
-    csv_path = os.path.join(current_script_path, csv_filename)
-    
-    with open(csv_path, 'w', newline='') as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(['Episode', 'Score', 'MA10', 'MA100', 'MA1000'])
-        
-        for i in range(len(scores)):
-            ma10 = moving_avg_10[i] if i < len(moving_avg_10) else ''
-            ma100 = moving_avg_100[i] if i < len(moving_avg_100) else ''
-            ma1000 = moving_avg_1000[i] if i < len(moving_avg_1000) else ''
-            writer.writerow([i+1, scores[i], ma10, ma100, ma1000])
-    
-    print(f"점수 데이터가 {csv_filename}에 저장되었습니다.")
 
 
 def visualize_filters(model, layer_name, epoch, save_path):
