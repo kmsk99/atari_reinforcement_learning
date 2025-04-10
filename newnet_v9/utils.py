@@ -80,13 +80,29 @@ def load_checkpoint(checkpoint_dir=checkpoint_dir):
 
 # 그래프 그리기 및 저장 함수 업데이트
 def plot_scores(scores, filename, save_csv=True):
+    # CSV 파일 저장
+    if save_csv:
+        csv_filename = os.path.join(current_script_path, 'scores.csv')
+        
+        # 데이터 준비 - 점수만 저장
+        data = {
+            'episode': list(range(1, len(scores) + 1)),
+            'score': scores,
+        }
+        
+        # 데이터프레임 생성 및 저장
+        df = pd.DataFrame(data)
+        df.to_csv(csv_filename, index=False)
+        print(f"점수 데이터가 {csv_filename}에 저장되었습니다.")
+    
+    # CSV 파일에서 데이터 읽기
+    csv_filename = os.path.join(current_script_path, 'scores.csv')
+    if os.path.exists(csv_filename):
+        df = pd.read_csv(csv_filename)
+        scores = df['score'].values
+    
     plt.figure(figsize=(12, 6))
-    # plt.plot(scores, label="Score", color="green")
-
-    # scores 배열이 2000개를 초과하는 경우 첫 2000개 요소로 제한
-    # if len(scores) > 2000:
-    #     scores = scores[:2000]
-
+    
     # 10개 이동평균 계산
     moving_avg_10 = [np.mean(scores[max(0, i - 9) : i + 1]) for i in range(len(scores))]
     plt.plot(moving_avg_10, label="10-episode Moving Avg", color="blue")
@@ -106,6 +122,21 @@ def plot_scores(scores, filename, save_csv=True):
     # 최고 점수 추적 및 플롯
     max_scores = [max(scores[:i+1]) for i in range(len(scores))]
     plt.plot(max_scores, label="Best Score", color="green", linestyle="--")
+    
+    # 100개 윈도우의 Moving Best 계산
+    window_size = 100
+    moving_best = []
+    for i in range(len(scores)):
+        window_start = max(0, i - window_size + 1)
+        moving_best.append(max(scores[window_start:i+1]))
+    plt.plot(moving_best, label="Moving Best (window=100)", color="purple", linestyle="-.")
+    
+    # 100개 윈도우의 Moving Worst 계산
+    moving_worst = []
+    for i in range(len(scores)):
+        window_start = max(0, i - window_size + 1)
+        moving_worst.append(min(scores[window_start:i+1]))
+    plt.plot(moving_worst, label="Moving Worst (window=100)", color="orange", linestyle="-.")
 
     plt.xlabel("Episode")
     plt.ylabel("Score")
@@ -113,21 +144,6 @@ def plot_scores(scores, filename, save_csv=True):
     plt.legend()
     plt.savefig(os.path.join(current_script_path, filename))
     plt.close()
-    
-    # CSV로 데이터 저장
-    if save_csv:
-        csv_filename = os.path.join(current_script_path, 'scores.csv')
-        
-        # 데이터 준비 - moving_avg는 저장하지 않음
-        data = {
-            'episode': list(range(1, len(scores) + 1)),
-            'score': scores,
-        }
-        
-        # 데이터프레임 생성 및 저장
-        df = pd.DataFrame(data)
-        df.to_csv(csv_filename, index=False)
-        print(f"점수 데이터가 {csv_filename}에 저장되었습니다.")
 
 
 def visualize_filters(model, layer_name, epoch, save_path):
