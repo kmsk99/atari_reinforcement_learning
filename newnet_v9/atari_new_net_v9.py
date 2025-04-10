@@ -12,15 +12,18 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from collections import deque
-from torch.cuda.amp import autocast, GradScaler  # 혼합 정밀도 학습을 위한 임포트
+from torch.cuda.amp import autocast, GradScaler
 from torch.distributions import Categorical
 from utils import (
     load_checkpoint,
     plot_scores,
-    preprocess,
     save_checkpoint,
     visualize_filters,
     visualize_layer_output,
+    save_gameplay_gif,
+    get_korea_time,
+    make_env,
+    compute_gae,
 )
 from datetime import datetime
 import pytz
@@ -34,7 +37,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 GAMMA = 0.99                # 할인계수: 미래 보상의 현재 가치를 계산할 때 사용, 높을수록 미래 보상 중요시
 LAMBDA = 0.95               # GAE 람다: 이점 추정의 편향-분산 트레이드오프 조절, 높을수록 분산 증가
 BATCH_SIZE = 32             # 배치 크기: 한 번에 학습하는 샘플 수
-NUM_ENVS = 32                # 병렬 환경 개수: 병렬로 실행할 환경 수, 데이터 수집 속도와 다양성 증가
+NUM_ENVS = 16                # 병렬 환경 개수: 병렬로 실행할 환경 수, 데이터 수집 속도와 다양성 증가
 LEARNING_RATE = 0.001       # 학습률: 파라미터 업데이트 크기 결정, 큰 값은 빠른 학습이나 불안정할 수 있음
 OPTIMIZER_GAMMA = 0.999    # 옵티마이저 학습률 감소 계수
 PPO_EPOCHS = 4              # PPO 업데이트 에포크: 수집된 데이터로 학습할 반복 횟수
@@ -217,155 +220,17 @@ def train_ppo(model, optimizer, scaler, observations, actions, log_probs, return
             scaler.update()
 
 
-# 벡터 환경 생성 함수
-def make_env(env_id, render=False):
-    def _thunk():
-        env = gym.make(env_id, render_mode="rgb_array" if render else None)
-        # 전처리 래퍼 적용
-        env = gym.wrappers.GrayScaleObservation(env, keep_dim=False)
-        env = gym.wrappers.ResizeObservation(env, (84, 84))
-        # 프레임 스택 래퍼 적용 (4개 프레임 스택)
-        env = gym.wrappers.FrameStack(env, 4)
-        # 타임아웃 래퍼 추가
-        env = gym.wrappers.TimeLimit(env, max_episode_steps=MAX_EPISODE_STEPS)
-        return env
-    return _thunk
-
-
-# 게임 플레이를 GIF로 저장하는 함수
-def save_gameplay_gif(model, episode_num, save_path=os.path.join(current_script_path, "gameplay")):
-    """
-    현재 학습된 모델을 사용하여 게임 플레이를 GIF로 저장합니다.
-    
-    Args:
-        model: 현재 학습된 PPO 모델
-        episode_num: 현재 에피소드 번호
-        save_path: GIF를 저장할 경로
-    """
-    # 전처리와 프레임 스택이 적용된 환경 생성
-    env = make_env("ALE/Breakout-v5", render=True)()
-    frames = []
-    obs, _ = env.reset()
-    
-    done = False
-    total_reward = 0
-    
-    # 최대 1000 스텝 또는 게임 종료까지 진행
-    for _ in range(1000):
-        if done:
-            break
-            
-        # obs는 이미 스택된 프레임 형태이므로 바로 사용
-        # numpy 배열을 PyTorch 텐서로 변환
-        obs_tensor = torch.FloatTensor(np.array(obs)).unsqueeze(0).to(device)
-        
-        # 행동 선택
-        with torch.no_grad():
-            action, _, _, _ = model.get_action_and_value(obs_tensor)
-            action = action.cpu().item()
-        
-        next_obs, r, terminated, truncated, info = env.step(action)
-        
-        # 렌더링된 프레임 저장
-        frames.append(env.render())
-        
-        done = terminated or truncated
-        total_reward += r
-        
-        # 다음 상태로 업데이트
-        obs = next_obs
-    
-    env.close()
-    
-    # GIF 저장
-    filename = os.path.join(save_path, f"gameplay_episode_{episode_num}.gif")
-    imageio.mimsave(filename, frames, fps=30)
-    
-    return total_reward
-
-
-# 일반화된 이득 추정(GAE) 계산 함수
-def compute_gae(rewards, values, dones, next_value, gamma=GAMMA, lam=LAMBDA):
-    """
-    GAE(Generalized Advantage Estimation)를 계산합니다.
-    
-    Args:
-        rewards: [step] 크기의 보상 텐서
-        values: [step] 크기의 가치 텐서
-        dones: [step] 크기의 종료 상태 텐서
-        next_value: [env] 크기의 다음 상태 가치 텐서 (마지막 상태)
-        gamma: 할인 계수
-        lam: GAE 람다 계수
-        
-    Returns:
-        returns: [step] 크기의 반환값 텐서
-        advantages: [step] 크기의 이점 텐서
-    """
-    # 장치 일관성 확인 및 동일한 장치로 이동
-    device = rewards.device
-    rewards = rewards.to(device)
-    values = values.to(device)
-    dones = dones.to(device)
-    next_value = next_value.to(device)
-    
-    # 텐서 형태 출력 (디버깅용)
-    # print(f"rewards shape: {rewards.shape}, values shape: {values.shape}")
-    # print(f"dones shape: {dones.shape}, next_value shape: {next_value.shape}")
-    
-    # 환경 수 확인
-    num_envs = next_value.shape[0]
-    steps_per_env = len(rewards) // num_envs
-    
-    # 텐서 재구성
-    rewards = rewards.view(steps_per_env, num_envs)
-    values = values.view(steps_per_env, num_envs)
-    dones = dones.view(steps_per_env, num_envs)
-    
-    # 가치, 리턴, 이점 초기화
-    advantages = torch.zeros_like(values, device=device)
-    returns = torch.zeros_like(values, device=device)
-    
-    # 최종 이점과 가치 설정
-    last_advantage = torch.zeros(num_envs, device=device)
-    last_value = next_value
-    
-    # 역순으로 계산
-    for t in reversed(range(steps_per_env)):
-        # 마스크 계산 (종료 상태가 아닌 경우 1, 종료 상태인 경우 0)
-        mask = 1.0 - dones[t]
-        
-        # 델타 계산: r + gamma * V(s') - V(s)
-        delta = rewards[t] + gamma * last_value * mask - values[t]
-        
-        # 이점 계산: delta + gamma * lambda * mask * A(s')
-        advantages[t] = delta + gamma * lam * mask * last_advantage
-        
-        # 다음 단계를 위한 값 갱신
-        last_advantage = advantages[t]
-        last_value = values[t]
-    
-    # 리턴 계산: 이점 + 가치
-    returns = advantages + values
-    
-    # 원래 형태로 다시 펼치기
-    advantages = advantages.view(-1)
-    returns = returns.view(-1)
-    
-    return returns, advantages
-
-
 # 메인 함수 정의
 def main(render):
-    # 한국 시간대 설정
-    korea_tz = pytz.timezone('Asia/Seoul')
+    # 시간대 설정 코드 제거 (utils.py의 get_korea_time 사용)
     
     if render:
-        env = make_env(ENV_ID, render=True)()
+        env = make_env(ENV_ID, render=True, max_episode_steps=MAX_EPISODE_STEPS)()
         num_envs = 1
     else:
         # 병렬 환경 생성
         envs = AsyncVectorEnv(
-            [make_env(ENV_ID) for _ in range(NUM_ENVS)]
+            [make_env(ENV_ID, max_episode_steps=MAX_EPISODE_STEPS) for _ in range(NUM_ENVS)]
         )
         num_envs = NUM_ENVS
     
@@ -373,7 +238,7 @@ def main(render):
     if render:
         num_actions = env.action_space.n
     else:
-        sample_env = make_env("ALE/Breakout-v5")()
+        sample_env = make_env(ENV_ID)()
         num_actions = sample_env.action_space.n
         sample_env.close()
     
@@ -500,12 +365,13 @@ def main(render):
                     # 에피소드 최대 길이 초과 시 강제 종료
                     if episode_lengths[i] >= MAX_EPISODE_STEPS:
                         dones_np[i] = True
-                        print(f"[{datetime.now(korea_tz).strftime('%m-%d %H:%M:%S')}] 환경 {i}에서 최대 길이 도달로 강제 종료")
+                        current_time = get_korea_time()
+                        print(f"[{current_time}] 환경 {i}에서 최대 길이 도달로 강제 종료")
                     
                     # 에피소드가 끝났으면 통계 저장하고 재설정
                     if dones_np[i]:
                         saved_scores.append(episode_rewards[i])
-                        current_time = datetime.now(korea_tz).strftime("%m-%d %H:%M:%S")
+                        current_time = get_korea_time()
                         print(f"[{current_time}] Episode {episode_count}: 환경 {i}에서 점수 {episode_rewards[i]:.1f}, 길이 {episode_lengths[i]}")
                         episode_rewards[i] = 0.0
                         episode_lengths[i] = 0
@@ -543,7 +409,7 @@ def main(render):
                             if episode_count - last_gif_episode >= GAMEPLAY_GIF_INTERVAL:
                                 last_gif_episode = episode_count
                                 print(f"에피소드 {episode_count}: 게임 플레이 GIF 저장 중...")
-                                reward = save_gameplay_gif(model, episode_count)
+                                reward = save_gameplay_gif(model, ENV_ID, episode_count, max_steps=MAX_EPISODE_STEPS, device=device)
                                 print(f"에피소드 {episode_count} 게임 플레이 GIF 저장 완료. 획득 점수: {reward}")
                                 
                                 # 동시에 체크포인트도 저장
@@ -585,9 +451,9 @@ def main(render):
             rewards = torch.cat(rewards)
             dones = torch.cat(dones)
             
-            # GAE 계산 (모든 텐서가 CPU에 있는 상태)
+            # GAE 계산
             returns, advantages = compute_gae(
-                rewards, values, dones, next_value
+                rewards, values, dones, next_value, gamma=GAMMA, lam=LAMBDA
             )
             
             # 이점 정규화
@@ -602,7 +468,7 @@ def main(render):
             # 터미널 출력에 학습 진행 상황 표시
             if n_epi % 10 == 0:
                 current_lr = scheduler.get_last_lr()[0]
-                current_time = datetime.now(korea_tz).strftime("%m-%d %H:%M:%S")
+                current_time = get_korea_time()
                 recent_scores = saved_scores[-10:] if len(saved_scores) > 0 else [0.0]
                 avg_score = np.mean(recent_scores)
                 print(f"[{current_time}] 업데이트 {n_epi}: 스텝 {total_steps}, 에피소드 {episode_count}, 최근 10개 에피소드 평균 점수: {avg_score:.1f}, 현재 학습률: {current_lr:.6f}")

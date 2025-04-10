@@ -15,21 +15,11 @@ import torch.optim as optim
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import torchvision.transforms as T
+import csv
+import pandas as pd
 from torch.utils.data import WeightedRandomSampler
-
-# 하이퍼파라미터 설정
-GAMMA = 0.99
-# PPO 알고리즘으로 변경하면서 필요없어진 상수들 제거
-# MEMORY_SIZE = 900000
-# BATCH_SIZE = 32
-# TRAINING_FREQUENCY = 4
-# TARGET_NETWORK_UPDATE_FREQUENCY = 40000
-# MODEL_PERSISTENCE_UPDATE_FREQUENCY = 5000
-# REPLAY_START_SIZE = 50000
-# EXPLORATION_MAX = 1.0
-# EXPLORATION_MIN = 0.1
-# EXPLORATION_TEST = 0.02
-# EXPLORATION_STEPS = 850000
+from datetime import datetime
+import pytz
 
 # 현재 스크립트의 경로를 찾습니다.
 current_script_path = os.path.dirname(os.path.realpath(__file__))
@@ -87,64 +77,9 @@ def load_checkpoint(checkpoint_dir=checkpoint_dir):
     return checkpoint["state"], checkpoint["scores"]
 
 
-# PPO로 전환하면서 PrioritizedReplayBuffer 클래스는 더 이상 필요 없음
-# class PrioritizedReplayBuffer:
-#     def __init__(self, buffer_limit=MEMORY_SIZE, device=None):
-#         self.buffer = collections.deque(maxlen=buffer_limit)
-#         self.priorities = collections.deque(maxlen=buffer_limit)
-#         self.device = device
-#         self.cumulative_reward = 0.01
-# 
-#     def put(self, transition, set_priority=False):
-#         s, a, r, s_prime, done_mask = transition
-#         if set_priority == True:
-#             self.cumulative_reward += r  # 누적 보상 갱신
-# 
-#             if done_mask == 0:  # 에피소드가 끝났다면 누적 보상 초기화
-#                 priority = self.cumulative_reward
-#                 self.cumulative_reward = 0.01  # 누적 보상 초기화
-#             else:
-#                 priority = self.cumulative_reward
-# 
-#             self.buffer.append(transition)
-#             self.priorities.append(priority)
-#         else:
-#             self.buffer.append(transition)
-#             self.priorities.append(1.0)  # 우선순위 1.0으로 설정
-# 
-#     def sample(self, n):
-#         sampler = WeightedRandomSampler(self.priorities, n, replacement=True)
-#         indices = list(sampler)
-# 
-#         mini_batch = [self.buffer[idx] for idx in indices]
-#         s_lst, a_lst, r_lst, s_prime_lst, done_mask_lst = [], [], [], [], []
-# 
-#         for transition in mini_batch:
-#             s, a, r, s_prime, done_mask = transition
-#             s_lst.append(s)
-#             s_prime_lst.append(s_prime)
-#             a_lst.append([a])
-#             r_lst.append([r])
-#             done_mask_lst.append([done_mask])
-# 
-#         return (
-#             torch.stack(s_lst).float().to(self.device),
-#             torch.tensor(a_lst, dtype=torch.long).to(self.device),
-#             torch.tensor(r_lst, dtype=torch.float).to(self.device),
-#             torch.stack(s_prime_lst).float().to(self.device),
-#             torch.tensor(done_mask_lst, dtype=torch.float).to(self.device),
-#             indices,  # 반환 값에 indices 추가
-#         )
-# 
-#     def update_priority(self, idx, priority):
-#         self.priorities[idx] = priority
-# 
-#     def size(self):
-#         return len(self.buffer)  # 버퍼 크기 반환
-
 
 # 그래프 그리기 및 저장 함수 업데이트
-def plot_scores(scores, filename):
+def plot_scores(scores, filename, save_csv=True):
     plt.figure(figsize=(12, 6))
     # plt.plot(scores, label="Score", color="green")
 
@@ -167,6 +102,10 @@ def plot_scores(scores, filename):
         np.mean(scores[max(0, i - 999) : i + 1]) for i in range(len(scores))
     ]
     plt.plot(moving_avg_1000, label="1000-episode Moving Avg", color="red")
+    
+    # 최고 점수 추적 및 플롯
+    max_scores = [max(scores[:i+1]) for i in range(len(scores))]
+    plt.plot(max_scores, label="Best Score", color="green", linestyle="--")
 
     plt.xlabel("Episode")
     plt.ylabel("Score")
@@ -174,6 +113,21 @@ def plot_scores(scores, filename):
     plt.legend()
     plt.savefig(os.path.join(current_script_path, filename))
     plt.close()
+    
+    # CSV로 데이터 저장
+    if save_csv:
+        csv_filename = os.path.join(current_script_path, 'scores.csv')
+        
+        # 데이터 준비 - moving_avg는 저장하지 않음
+        data = {
+            'episode': list(range(1, len(scores) + 1)),
+            'score': scores,
+        }
+        
+        # 데이터프레임 생성 및 저장
+        df = pd.DataFrame(data)
+        df.to_csv(csv_filename, index=False)
+        print(f"점수 데이터가 {csv_filename}에 저장되었습니다.")
 
 
 def visualize_filters(model, layer_name, epoch, save_path):
@@ -250,3 +204,162 @@ def preprocess(frame):
     )
     
     return transform(frame).squeeze(0)  # 배치 차원 제거
+
+# 게임 플레이를 GIF로 저장하는 함수
+def save_gameplay_gif(model, env_id, episode_num, max_steps=1000, device="cuda", save_path=None):
+    """
+    현재 학습된 모델을 사용하여 게임 플레이를 GIF로 저장합니다.
+    
+    Args:
+        model: 현재 학습된 PPO 모델
+        env_id: 환경 ID (예: "ALE/Breakout-v5")
+        episode_num: 현재 에피소드 번호
+        max_steps: 최대 스텝 수
+        device: 모델을 실행할 장치
+        save_path: GIF를 저장할 경로
+    """
+    if save_path is None:
+        save_path = os.path.join(current_script_path, "gameplay")
+    
+    # 환경 생성
+    env = gym.make(env_id, render_mode="rgb_array")
+    env = gym.wrappers.GrayScaleObservation(env, keep_dim=False)
+    env = gym.wrappers.ResizeObservation(env, (84, 84))
+    env = gym.wrappers.FrameStack(env, 4)
+    
+    frames = []
+    obs, _ = env.reset()
+    
+    done = False
+    total_reward = 0
+    
+    # 최대 스텝 수 또는 게임 종료까지 진행
+    for _ in range(max_steps):
+        if done:
+            break
+            
+        # 상태를 PyTorch 텐서로 변환
+        obs_tensor = torch.FloatTensor(np.array(obs)).unsqueeze(0).to(device)
+        
+        # 행동 선택
+        with torch.no_grad():
+            action, _, _, _ = model.get_action_and_value(obs_tensor)
+            action = action.cpu().item()
+        
+        next_obs, r, terminated, truncated, info = env.step(action)
+        
+        # 렌더링된 프레임 저장
+        frames.append(env.render())
+        
+        done = terminated or truncated
+        total_reward += r
+        
+        # 다음 상태로 업데이트
+        obs = next_obs
+    
+    env.close()
+    
+    # GIF 저장
+    import imageio
+    filename = os.path.join(save_path, f"gameplay_episode_{episode_num}.gif")
+    imageio.mimsave(filename, frames, fps=30)
+    
+    return total_reward
+
+# 한국 시간을 반환하는 함수
+def get_korea_time():
+    """
+    현재 한국 시간을 "MM-DD HH:MM:SS" 형식의 문자열로 반환합니다.
+    """
+    korea_tz = pytz.timezone('Asia/Seoul')
+    return datetime.now(korea_tz).strftime("%m-%d %H:%M:%S")
+
+# 벡터 환경 생성 함수
+def make_env(env_id, render=False, max_episode_steps=1000):
+    """
+    환경을 생성하는 함수입니다.
+    
+    Args:
+        env_id: 환경 ID (예: "ALE/Breakout-v5")
+        render: 렌더링 여부
+        max_episode_steps: 에피소드 최대 길이
+        
+    Returns:
+        환경 생성 함수
+    """
+    def _thunk():
+        env = gym.make(env_id, render_mode="rgb_array" if render else None)
+        # 전처리 래퍼 적용
+        env = gym.wrappers.GrayScaleObservation(env, keep_dim=False)
+        env = gym.wrappers.ResizeObservation(env, (84, 84))
+        # 프레임 스택 래퍼 적용 (4개 프레임 스택)
+        env = gym.wrappers.FrameStack(env, 4)
+        # 타임아웃 래퍼 추가
+        env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
+        return env
+    return _thunk
+
+# GAE(Generalized Advantage Estimation) 계산 함수
+def compute_gae(rewards, values, dones, next_value, gamma=0.99, lam=0.95):
+    """
+    GAE(Generalized Advantage Estimation)를 계산합니다.
+    
+    Args:
+        rewards: [step] 크기의 보상 텐서
+        values: [step] 크기의 가치 텐서
+        dones: [step] 크기의 종료 상태 텐서
+        next_value: [env] 크기의 다음 상태 가치 텐서 (마지막 상태)
+        gamma: 할인 계수
+        lam: GAE 람다 계수
+        
+    Returns:
+        returns: [step] 크기의 반환값 텐서
+        advantages: [step] 크기의 이점 텐서
+    """
+    # 장치 일관성 확인 및 동일한 장치로 이동
+    device = rewards.device
+    rewards = rewards.to(device)
+    values = values.to(device)
+    dones = dones.to(device)
+    next_value = next_value.to(device)
+    
+    # 환경 수 확인
+    num_envs = next_value.shape[0]
+    steps_per_env = len(rewards) // num_envs
+    
+    # 텐서 재구성
+    rewards = rewards.view(steps_per_env, num_envs)
+    values = values.view(steps_per_env, num_envs)
+    dones = dones.view(steps_per_env, num_envs)
+    
+    # 가치, 리턴, 이점 초기화
+    advantages = torch.zeros_like(values, device=device)
+    returns = torch.zeros_like(values, device=device)
+    
+    # 최종 이점과 가치 설정
+    last_advantage = torch.zeros(num_envs, device=device)
+    last_value = next_value
+    
+    # 역순으로 계산
+    for t in reversed(range(steps_per_env)):
+        # 마스크 계산 (종료 상태가 아닌 경우 1, 종료 상태인 경우 0)
+        mask = 1.0 - dones[t]
+        
+        # 델타 계산: r + gamma * V(s') - V(s)
+        delta = rewards[t] + gamma * last_value * mask - values[t]
+        
+        # 이점 계산: delta + gamma * lambda * mask * A(s')
+        advantages[t] = delta + gamma * lam * mask * last_advantage
+        
+        # 다음 단계를 위한 값 갱신
+        last_advantage = advantages[t]
+        last_value = values[t]
+    
+    # 리턴 계산: 이점 + 가치
+    returns = advantages + values
+    
+    # 원래 형태로 다시 펼치기
+    advantages = advantages.view(-1)
+    returns = returns.view(-1)
+    
+    return returns, advantages
