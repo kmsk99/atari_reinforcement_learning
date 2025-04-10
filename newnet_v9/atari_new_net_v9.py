@@ -24,22 +24,39 @@ from utils import (
 )
 from datetime import datetime
 import pytz
+import time
 
 # CUDA 사용 가능 여부 확인
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # 하이퍼파라미터 설정
-GAMMA = 0.99  # 할인계수
-LAMBDA = 0.95  # GAE 람다
-BATCH_SIZE = 32  # 배치 크기
-NUM_ENVS = 8  # 병렬 환경 개수
-LEARNING_RATE = 0.005  # 학습률
-PPO_EPOCHS = 4  # PPO 업데이트 에포크
-PPO_EPSILON = 0.2  # PPO 클리핑 파라미터
-ENTROPY_COEF = 0.01  # 엔트로피 계수
-VALUE_COEF = 0.5  # 가치 손실 계수
-MAX_GRAD_NORM = 0.5  # 그래디언트 클리핑 임계값
-STEPS_PER_UPDATE = 128  # 업데이트당 스텝 수
+# 학습 관련 파라미터
+GAMMA = 0.99                # 할인계수: 미래 보상의 현재 가치를 계산할 때 사용, 높을수록 미래 보상 중요시
+LAMBDA = 0.95               # GAE 람다: 이점 추정의 편향-분산 트레이드오프 조절, 높을수록 분산 증가
+BATCH_SIZE = 32             # 배치 크기: 한 번에 학습하는 샘플 수
+NUM_ENVS = 8                # 병렬 환경 개수: 병렬로 실행할 환경 수, 데이터 수집 속도와 다양성 증가
+LEARNING_RATE = 0.005       # 학습률: 파라미터 업데이트 크기 결정, 큰 값은 빠른 학습이나 불안정할 수 있음
+PPO_EPOCHS = 4              # PPO 업데이트 에포크: 수집된 데이터로 학습할 반복 횟수
+PPO_EPSILON = 0.2           # PPO 클리핑 파라미터: 정책 업데이트 제한, 안정성 향상
+ENTROPY_COEF = 0.01         # 엔트로피 계수: 탐험 장려 정도, 높을수록 더 많은 탐험
+VALUE_COEF = 0.5            # 가치 손실 계수: 가치 함수 학습 중요도
+MAX_GRAD_NORM = 0.5         # 그래디언트 클리핑 임계값: 그래디언트 폭발 방지
+STEPS_PER_UPDATE = 128      # 업데이트당 스텝 수: 한번의 학습 사이클에 수집할 데이터 양
+MAX_EPISODE_STEPS = 1000    # 에피소드 최대 길이: 에피소드 최대 스텝 수
+
+# 환경 및 모델 파라미터
+ENV_ID = "ALE/Breakout-v5"  # 환경 ID: 학습할 게임 환경
+FRAME_STACK = 4             # 프레임 스택: 입력으로 사용할 연속 프레임 수
+FRAME_SIZE = 84             # 프레임 크기: 입력 이미지 크기
+CONV1_FILTERS = 32          # Conv1 필터 수
+CONV2_FILTERS = 64          # Conv2 필터 수
+CONV3_FILTERS = 64          # Conv3 필터 수
+FC_SIZE = 512               # 완전 연결 레이어 크기
+
+# 시각화 및 체크포인트 관련 파라미터
+VISUALIZATION_INTERVAL = 100   # 시각화 간격: 몇 에피소드마다 시각화할지
+GAMEPLAY_GIF_INTERVAL = 500    # 게임 플레이 GIF 간격: 몇 에피소드마다 GIF 저장할지
+CHECKPOINT_INTERVAL = 500      # 체크포인트 저장 간격: 몇 에피소드마다 체크포인트 저장할지
 
 # 현재 스크립트의 경로를 찾습니다.
 current_script_path = os.path.dirname(os.path.realpath(__file__))
@@ -55,16 +72,19 @@ os.makedirs(os.path.join(current_script_path, "gameplay"), exist_ok=True)
 class PPONet(nn.Module):
     def __init__(self, num_actions):
         super(PPONet, self).__init__()
-        # CNN 특징 추출기 (기존과 동일)
+        # CNN 특징 추출기
         # 입력 크기: 84x84x4 (4개 프레임 스택)
         # 출력 크기: 32x20x20
-        self.conv1 = nn.Conv2d(4, 32, kernel_size=8, stride=4)
+        self.conv1 = nn.Conv2d(FRAME_STACK, CONV1_FILTERS, kernel_size=8, stride=4)
         # 입력 크기: 32x20x20
         # 출력 크기: 64x9x9
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        self.conv2 = nn.Conv2d(CONV1_FILTERS, CONV2_FILTERS, kernel_size=4, stride=2)
         # 입력 크기: 64x9x9
         # 출력 크기: 64x7x7
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+        self.conv3 = nn.Conv2d(CONV2_FILTERS, CONV3_FILTERS, kernel_size=3, stride=1)
+        
+        # 특성 맵 크기 계산
+        conv_output_size = CONV3_FILTERS * 7 * 7  # 64 * 7 * 7 = 3136
         
         # 출력 특성 크기: 64 * 7 * 7 = 3136
         self.flatten = nn.Flatten()
@@ -82,16 +102,16 @@ class PPONet(nn.Module):
         
         # Actor 네트워크 (정책)
         self.actor = nn.Sequential(
-            nn.Linear(3136, 512),
+            nn.Linear(conv_output_size, FC_SIZE),
             nn.ReLU(),
-            nn.Linear(512, num_actions)
+            nn.Linear(FC_SIZE, num_actions)
         )
         
         # Critic 네트워크 (가치)
         self.critic = nn.Sequential(
-            nn.Linear(3136, 512),
+            nn.Linear(conv_output_size, FC_SIZE),
             nn.ReLU(),
-            nn.Linear(512, 1)
+            nn.Linear(FC_SIZE, 1)
         )
         
         self.activations = {}  # 시각화를 위한 활성화 저장
@@ -205,6 +225,8 @@ def make_env(env_id, render=False):
         env = gym.wrappers.ResizeObservation(env, (84, 84))
         # 프레임 스택 래퍼 적용 (4개 프레임 스택)
         env = gym.wrappers.FrameStack(env, 4)
+        # 타임아웃 래퍼 추가
+        env = gym.wrappers.TimeLimit(env, max_episode_steps=MAX_EPISODE_STEPS)
         return env
     return _thunk
 
@@ -337,12 +359,13 @@ def main(render):
     korea_tz = pytz.timezone('Asia/Seoul')
     
     if render:
-        # 렌더링 모드에서는 단일 환경만 사용 (프레임 스택 적용)
-        env = make_env("ALE/Breakout-v5", render=True)()
+        env = make_env(ENV_ID, render=True)()
         num_envs = 1
     else:
-        # 훈련 모드에서는 병렬 환경 사용 (각 환경에 프레임 스택 적용)
-        envs = AsyncVectorEnv([make_env("ALE/Breakout-v5") for _ in range(NUM_ENVS)])
+        # 병렬 환경 생성
+        envs = AsyncVectorEnv(
+            [make_env(ENV_ID) for _ in range(NUM_ENVS)]
+        )
         num_envs = NUM_ENVS
     
     # 액션 공간 크기 가져오기
@@ -447,10 +470,6 @@ def main(render):
             last_plot_episode = 0
             last_gif_episode = 0
             
-            # 시각화 간격 설정 (에피소드 단위)
-            VISUALIZATION_INTERVAL = 100
-            GAMEPLAY_GIF_INTERVAL = 500
-
             # STEPS_PER_UPDATE 스텝 동안 데이터 수집
             for step in range(STEPS_PER_UPDATE):
                 total_steps += num_envs
@@ -476,6 +495,11 @@ def main(render):
                 for i in range(num_envs):
                     episode_rewards[i] += rewards_np[i]
                     episode_lengths[i] += 1
+                    
+                    # 에피소드 최대 길이 초과 시 강제 종료
+                    if episode_lengths[i] >= MAX_EPISODE_STEPS:
+                        dones_np[i] = True
+                        print(f"[{datetime.now(korea_tz).strftime('%m-%d %H:%M:%S')}] 환경 {i}에서 최대 길이 도달로 강제 종료")
                     
                     # 에피소드가 끝났으면 통계 저장하고 재설정
                     if dones_np[i]:
