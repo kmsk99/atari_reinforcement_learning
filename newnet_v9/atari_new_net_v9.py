@@ -34,8 +34,9 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 GAMMA = 0.99                # 할인계수: 미래 보상의 현재 가치를 계산할 때 사용, 높을수록 미래 보상 중요시
 LAMBDA = 0.95               # GAE 람다: 이점 추정의 편향-분산 트레이드오프 조절, 높을수록 분산 증가
 BATCH_SIZE = 32             # 배치 크기: 한 번에 학습하는 샘플 수
-NUM_ENVS = 8                # 병렬 환경 개수: 병렬로 실행할 환경 수, 데이터 수집 속도와 다양성 증가
-LEARNING_RATE = 0.005       # 학습률: 파라미터 업데이트 크기 결정, 큰 값은 빠른 학습이나 불안정할 수 있음
+NUM_ENVS = 32                # 병렬 환경 개수: 병렬로 실행할 환경 수, 데이터 수집 속도와 다양성 증가
+LEARNING_RATE = 0.001       # 학습률: 파라미터 업데이트 크기 결정, 큰 값은 빠른 학습이나 불안정할 수 있음
+OPTIMIZER_GAMMA = 0.999    # 옵티마이저 학습률 감소 계수
 PPO_EPOCHS = 4              # PPO 업데이트 에포크: 수집된 데이터로 학습할 반복 횟수
 PPO_EPSILON = 0.2           # PPO 클리핑 파라미터: 정책 업데이트 제한, 안정성 향상
 ENTROPY_COEF = 0.01         # 엔트로피 계수: 탐험 장려 정도, 높을수록 더 많은 탐험
@@ -382,7 +383,7 @@ def main(render):
 
     # Optimizer와 Scheduler 초기화
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999)  # 매 에피소드마다 0.9999배 감소
+    scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=OPTIMIZER_GAMMA)  # 매 에피소드마다 0.9999배 감소
     scaler = GradScaler()  # 혼합 정밀도 학습을 위한 GradScaler 초기화
 
     # 체크포인트 로드 시도
