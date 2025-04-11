@@ -386,12 +386,12 @@ def main(render):
                                     model(sample_state)
                                 
                                 # 시각화 호출
-                                visualize_filters(model, "conv1", epoch=episode_count, save_path=current_script_path)
-                                visualize_filters(model, "conv2", epoch=episode_count, save_path=current_script_path)
-                                visualize_filters(model, "conv3", epoch=episode_count, save_path=current_script_path)
-                                visualize_layer_output(model, "conv1", current_script_path, episode_count)
-                                visualize_layer_output(model, "conv2", current_script_path, episode_count)
-                                visualize_layer_output(model, "conv3", current_script_path, episode_count)
+                                # visualize_filters(model, "conv1", epoch=episode_count, save_path=current_script_path)
+                                # visualize_filters(model, "conv2", epoch=episode_count, save_path=current_script_path)
+                                # visualize_filters(model, "conv3", epoch=episode_count, save_path=current_script_path)
+                                # visualize_layer_output(model, "conv1", current_script_path, episode_count)
+                                # visualize_layer_output(model, "conv2", current_script_path, episode_count)
+                                # visualize_layer_output(model, "conv3", current_script_path, episode_count)
                                 print(f"Episode {episode_count}: 그래프 및 시각화 업데이트 완료")
                         
                         # 에피소드 수에 기반하여 GIF 저장 체크
