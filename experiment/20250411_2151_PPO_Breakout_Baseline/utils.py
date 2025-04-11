@@ -20,7 +20,7 @@ default_checkpoint_dir = os.path.join(current_script_path, "checkpoints")
 
 
 def save_checkpoint(
-    state, episode, scores, checkpoint_dir=None, keep_last=10
+    state, episode, scores, checkpoint_dir=None, keep_last=3
 ):
     # checkpoint_dir 인자가 없으면 기본값 사용
     if checkpoint_dir is None:
