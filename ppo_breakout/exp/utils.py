@@ -142,6 +142,7 @@ def plot_scores(scores, filename, save_csv=True):
     plt.ylabel("Score")
     plt.title("Scores per Episode")
     plt.legend()
+
     plt.savefig(os.path.join(current_script_path, filename))
     plt.close()
 
