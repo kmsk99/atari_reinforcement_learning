@@ -146,6 +146,84 @@ def plot_scores(scores, filename, save_csv=True):
     plt.savefig(os.path.join(current_script_path, filename))
     plt.close()
 
+# 이동 최고/최저가 없는 단순 플롯 함수
+def plot_scores_simple(scores, filename, save_csv=False):
+    # CSV 파일에서 데이터 읽기
+    csv_filename = os.path.join(current_script_path, 'scores.csv')
+    if os.path.exists(csv_filename):
+        df = pd.read_csv(csv_filename)
+        scores = df['score'].values
+    
+    plt.figure(figsize=(12, 6))
+    
+    # 10개 이동평균 계산
+    moving_avg_10 = [np.mean(scores[max(0, i - 9) : i + 1]) for i in range(len(scores))]
+    plt.plot(moving_avg_10, label="10-episode Moving Avg", color="blue")
+
+    # 100개 이동평균 계산
+    moving_avg_100 = [
+        np.mean(scores[max(0, i - 99) : i + 1]) for i in range(len(scores))
+    ]
+    plt.plot(moving_avg_100, label="100-episode Moving Avg", color="yellow")
+
+    # 1000개 이동평균 계산
+    moving_avg_1000 = [
+        np.mean(scores[max(0, i - 999) : i + 1]) for i in range(len(scores))
+    ]
+    plt.plot(moving_avg_1000, label="1000-episode Moving Avg", color="red")
+
+    plt.xlabel("Episode")
+    plt.ylabel("Score")
+    plt.title("Scores per Episode (Simple)")
+    plt.legend()
+
+    plt.savefig(os.path.join(current_script_path, filename))
+    plt.close()
+
+# 최근 1000개 에피소드만 표시하는 플롯 함수
+def plot_recent_scores(scores, filename, save_csv=False):
+    # CSV 파일에서 데이터 읽기
+    csv_filename = os.path.join(current_script_path, 'scores.csv')
+    if os.path.exists(csv_filename):
+        df = pd.read_csv(csv_filename)
+        scores = df['score'].values
+    
+    # 최근 1000개 에피소드만 선택
+    recent_count = min(1000, len(scores))
+    recent_scores = scores[-recent_count:]
+    
+    plt.figure(figsize=(12, 6))
+    
+    # x축 값 계산 (전체 에피소드 수 기준으로)
+    x_values = list(range(len(scores) - recent_count + 1, len(scores) + 1))
+    
+    # 10개 이동평균 계산
+    moving_avg_10 = [np.mean(recent_scores[max(0, i - 9) : i + 1]) for i in range(len(recent_scores))]
+    plt.plot(x_values, moving_avg_10, label="10-episode Moving Avg", color="blue")
+
+    # 100개 이동평균 계산
+    moving_avg_100 = [
+        np.mean(recent_scores[max(0, i - 99) : i + 1]) for i in range(len(recent_scores))
+    ]
+    plt.plot(x_values, moving_avg_100, label="100-episode Moving Avg", color="yellow")
+
+    plt.xlabel("Episode")
+    plt.ylabel("Score")
+    plt.title(f"Recent {recent_count} Episodes")
+    plt.legend()
+
+    plt.savefig(os.path.join(current_script_path, filename))
+    plt.close()
+
+# 세 개의 그래프를 한번에 생성하는 함수
+def plot_all_scores(scores, prefix="training_", save_csv=True):
+    # 모든 그래프 생성
+    plot_scores(scores, f"{prefix}scores_full.png", save_csv=save_csv)
+    plot_scores_simple(scores, f"{prefix}scores_simple.png", save_csv=False)
+    plot_recent_scores(scores, f"{prefix}scores_recent.png", save_csv=False)
+    
+    print(f"세 개의 그래프가 생성되었습니다: {prefix}scores_full.png, {prefix}scores_simple.png, {prefix}scores_recent.png")
+
 
 def visualize_filters(model, layer_name, epoch, save_path):
     # 해당 층의 가중치 추출

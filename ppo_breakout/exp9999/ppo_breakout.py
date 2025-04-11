@@ -16,7 +16,7 @@ from torch.cuda.amp import autocast, GradScaler
 from torch.distributions import Categorical
 from utils import (
     load_checkpoint,
-    plot_scores,
+    plot_all_scores,
     save_checkpoint,
     visualize_filters,
     visualize_layer_output,
@@ -37,7 +37,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 GAMMA = 0.99                # 할인계수: 미래 보상의 현재 가치를 계산할 때 사용, 높을수록 미래 보상 중요시
 LAMBDA = 0.95               # GAE 람다: 이점 추정의 편향-분산 트레이드오프 조절, 높을수록 분산 증가
 BATCH_SIZE = 32             # 배치 크기: 한 번에 학습하는 샘플 수
-NUM_ENVS = 16                # 병렬 환경 개수: 병렬로 실행할 환경 수, 데이터 수집 속도와 다양성 증가
+NUM_ENVS = 32                # 병렬 환경 개수: 병렬로 실행할 환경 수, 데이터 수집 속도와 다양성 증가
 LEARNING_RATE = 0.001       # 학습률: 파라미터 업데이트 크기 결정, 큰 값은 빠른 학습이나 불안정할 수 있음
 OPTIMIZER_GAMMA = 0.9999    # 옵티마이저 학습률 감소 계수
 PPO_EPOCHS = 4              # PPO 업데이트 에포크: 수집된 데이터로 학습할 반복 횟수
@@ -290,7 +290,7 @@ def main(render):
             done = False
             total_reward = 0
             
-            plot_scores(saved_scores, "score_plot.png")
+            plot_all_scores(saved_scores, "score_plot.png")
             
             while not done:
                 # obs는 이미 스택된 프레임 형태이므로 바로 사용
@@ -384,7 +384,7 @@ def main(render):
                             if episode_count - last_plot_episode >= VISUALIZATION_INTERVAL:
                                 last_plot_episode = episode_count
                                 print(f"Episode {episode_count}: 그래프 및 시각화 업데이트 중...")
-                                plot_scores(saved_scores, "score_plot.png")
+                                plot_all_scores(saved_scores, "score_plot.png")
                                 
                                 # 임의의 입력을 사용하여 레이어 활성화 시각화를 위한 순전파 수행
                                 # 벡터 환경에서 첫 번째 환경의 현재 상태 사용
