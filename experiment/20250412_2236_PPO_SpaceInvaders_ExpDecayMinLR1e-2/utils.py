@@ -383,8 +383,8 @@ def make_env(env_id, render=False, max_episode_steps=27000, frame_stack=4, clip_
             env = FrameStack(env, frame_stack)
             
             # 보상 클리핑 래퍼 (-1, 0, 1) 적용 (학습 안정화)
-            if clip_rewards:
-                env = TransformReward(env, lambda r: np.sign(r))
+            # if clip_rewards:
+            #     env = TransformReward(env, lambda r: np.sign(r))
             
             # 타임 리밋 래퍼 (에피소드 최대 길이 제한)
             if max_episode_steps is not None:
