@@ -26,6 +26,8 @@ current_script_path = os.path.dirname(os.path.realpath(__file__))
 # CUDA 사용 가능 여부 확인
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+EXPERIMENT_TAG = "Breakout_PPO_ExpDecayMinLR1e-2"
+
 # 하이퍼파라미터 설정
 # 학습 관련 파라미터
 GAMMA = 0.99                # 할인계수: 미래 보상의 현재 가치를 계산할 때 사용, 높을수록 미래 보상 중요시
@@ -540,12 +542,9 @@ if __name__ == "__main__":
     # --- 실험 추적 설정 ---
     # 기본 경로 설정 (ppo_breakout.py 파일이 있는 위치 기준)
     base_results_dir = os.path.join(os.path.dirname(current_script_path), "results")
-
-    # 실험 태그만 사용하여 폴더 생성 (타임스탬프 없음)
-    experiment_tag = "Breakout_PPO_ExpDecayMinLR1e-2"
     
     # 결과 폴더 경로 생성 (타임스탬프 없이 태그만 사용)
-    output_dir = os.path.join(base_results_dir, experiment_tag)
+    output_dir = os.path.join(base_results_dir, EXPERIMENT_TAG)
 
     # 결과 폴더 및 하위 폴더 생성
     checkpoint_dir = os.path.join(output_dir, "checkpoints")
@@ -562,7 +561,7 @@ if __name__ == "__main__":
     os.makedirs(layer_dir, exist_ok=True)
     os.makedirs(gameplay_dir, exist_ok=True)
 
-    print(f"--- 실험 시작: {experiment_tag} ---")
+    print(f"--- 실험 시작: {EXPERIMENT_TAG} ---")
     print(f"결과 저장 경로: {output_dir}")
     
     # 수정된 main 함수 호출 (모든 경로 전달)
