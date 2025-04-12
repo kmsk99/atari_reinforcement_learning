@@ -18,6 +18,8 @@ from utils import (
     get_korea_time,
     make_env,
     compute_gae,
+    save_pretrained_model,
+    load_pretrained_model,
 )
 
 # 현재 스크립트의 경로를 찾습니다
@@ -217,7 +219,7 @@ def train_ppo(model, optimizer, scaler, observations, actions, log_probs, return
 
 
 # 메인 함수 정의
-def main(render, output_dir, checkpoint_dir, filter_dir, layer_dir, gameplay_dir, plot_filename, csv_filename):
+def main(render, output_dir, checkpoint_dir, gameplay_dir, plot_filename, csv_filename, use_pretrained=False):
     # 시간대 설정 코드 제거 (utils.py의 get_korea_time 사용)
     
     if render:
@@ -242,6 +244,13 @@ def main(render, output_dir, checkpoint_dir, filter_dir, layer_dir, gameplay_dir
     # PPO 모델 생성
     model = PPONet(num_actions).to(device)
     model.register_hooks(["conv1", "conv2", "conv3"])
+
+    # Pretrained 모델 로드 시도
+    if use_pretrained:
+        pretrained_dir = os.path.join(output_dir, "pretrained")
+        pretrained_loaded = load_pretrained_model(model, pretrained_dir=pretrained_dir)
+        if pretrained_loaded:
+            print("Pretrained 모델을 사용합니다.")
 
     # Optimizer와 Scheduler 초기화
     print(f"초기 학습률: {LEARNING_RATE}, 감마: {SCHEDULER_GAMMA}, 최소 LR: {MIN_LEARNING_RATE}")
@@ -437,21 +446,6 @@ def main(render, output_dir, checkpoint_dir, filter_dir, layer_dir, gameplay_dir
                                 last_plot_episode = episode_count
                                 print(f"Episode {episode_count}: 그래프 및 시각화 업데이트 중...")
                                 plot_all_scores(saved_scores, plot_filename, csv_filename)
-                                
-                                # 임의의 입력을 사용하여 레이어 활성화 시각화를 위한 순전파 수행
-                                # 벡터 환경에서 첫 번째 환경의 현재 상태 사용
-                                # sample_state = torch.FloatTensor(np.array(states[0])).unsqueeze(0).to(device)
-                                # with torch.no_grad():
-                                    # 순전파를 수행하여 활성화 값 생성
-                                    # model(sample_state)
-                                
-                                # 시각화 호출
-                                # visualize_filters(model, "conv1", episode_count, save_path=output_dir)
-                                # visualize_filters(model, "conv2", episode_count, save_path=output_dir)
-                                # visualize_filters(model, "conv3", episode_count, save_path=output_dir)
-                                # visualize_layer_output(model, "conv1", output_dir, episode_count)
-                                # visualize_layer_output(model, "conv2", output_dir, episode_count)
-                                # visualize_layer_output(model, "conv3", output_dir, episode_count)
                                 print(f"Episode {episode_count}: 그래프 및 시각화 업데이트 완료")
                         
                         # 에피소드 수에 기반하여 GIF 저장 체크
@@ -477,6 +471,10 @@ def main(render, output_dir, checkpoint_dir, filter_dir, layer_dir, gameplay_dir
                                     saved_scores,
                                     checkpoint_dir=checkpoint_dir
                                 )
+                                # pretrained 모델 저장 (모델 state만 저장)
+                                pretrained_dir = os.path.join(output_dir, "pretrained")
+                                save_pretrained_model(model.state_dict(), pretrained_dir=pretrained_dir)
+                                print(f"에피소드 {episode_count}: pretrained 모델 저장 완료")
                                 print(f"에피소드 {episode_count}: 체크포인트 저장 완료")
                 
                 # 데이터 저장 - 모두 같은 장치(CPU)에 저장
@@ -513,7 +511,7 @@ def main(render, output_dir, checkpoint_dir, filter_dir, layer_dir, gameplay_dir
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
             
             # PPO 업데이트
-            train_ppo(model, optimizer, scaler, observations, actions, log_probs, returns, advantages, current_update=update, total_updates=NUM_UPDATES)
+            train_ppo(model, optimizer, scaler, observations, actions, log_probs, returns, advantages)
             
             # 학습률 스케줄러 업데이트
             scheduler.step()
@@ -524,13 +522,7 @@ def main(render, output_dir, checkpoint_dir, filter_dir, layer_dir, gameplay_dir
                 current_time = get_korea_time()
                 recent_scores = saved_scores[-10:] if len(saved_scores) > 0 else [0.0]
                 avg_score = np.mean(recent_scores)
-                
-                # 현재 엔트로피 계수 계산
-                progress_fraction = min(update / NUM_UPDATES, 1.0) if NUM_UPDATES > 0 else 0.0
-                current_entropy_coef = ENTROPY_COEF_INITIAL * (1 - progress_fraction) + ENTROPY_COEF_FINAL * progress_fraction
-                current_entropy_coef = max(current_entropy_coef, ENTROPY_COEF_FINAL)
-                
-                print(f"[{current_time}] 업데이트 {update}: 스텝 {total_steps}, 에피소드 {episode_count}, 최근 10개 에피소드 평균 점수: {avg_score:.1f}, 현재 학습률: {current_lr:.6f}, 엔트로피 계수: {current_entropy_coef:.6f}")
+                print(f"[{current_time}] 업데이트 {update}: 스텝 {total_steps}, 에피소드 {episode_count}, 최근 10개 에피소드 평균 점수: {avg_score:.1f}, 현재 학습률: {current_lr:.6f}")
             
             # 상태 업데이트
             states = next_states
@@ -545,6 +537,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--render", action="store_true", help="Render the environment."
+    )
+    parser.add_argument(
+        "--use_pretrained", action="store_true", help="Use pretrained model if available."
     )
     args = parser.parse_args()
 
@@ -562,8 +557,6 @@ if __name__ == "__main__":
 
     # 결과 폴더 및 하위 폴더 생성
     checkpoint_dir = os.path.join(output_dir, "checkpoints")
-    filter_dir = os.path.join(output_dir, "filters")
-    layer_dir = os.path.join(output_dir, "layers")
     gameplay_dir = os.path.join(output_dir, "gameplay")
     plot_filename = os.path.join(output_dir, "training_")
     csv_filename = os.path.join(output_dir, "scores.csv")
@@ -571,12 +564,10 @@ if __name__ == "__main__":
     os.makedirs(base_results_dir, exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(checkpoint_dir, exist_ok=True)
-    os.makedirs(filter_dir, exist_ok=True)
-    os.makedirs(layer_dir, exist_ok=True)
     os.makedirs(gameplay_dir, exist_ok=True)
 
     print(f"--- 실험 시작: {EXPERIMENT_TAG} ---")
     print(f"결과 저장 경로: {output_dir}")
     
     # 수정된 main 함수 호출 (모든 경로 전달)
-    main(args.render, output_dir, checkpoint_dir, filter_dir, layer_dir, gameplay_dir, plot_filename, csv_filename)
+    main(args.render, output_dir, checkpoint_dir, gameplay_dir, plot_filename, csv_filename, use_pretrained=args.use_pretrained)

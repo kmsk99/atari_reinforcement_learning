@@ -258,67 +258,6 @@ def plot_all_scores(scores, plot_prefix="training_", csv_filename=None, max_poin
     
     print(f"세 개의 그래프가 생성되었습니다: {plot_prefix}scores_full.png, {plot_prefix}scores_simple.png, {plot_prefix}scores_recent.png")
 
-
-def visualize_filters(model, layer_name, epoch, save_path):
-    # 필터 이미지를 저장할 디렉토리 확인
-    filters_dir = os.path.join(save_path, "filters")
-    os.makedirs(filters_dir, exist_ok=True)
-    
-    # 해당 층의 가중치 추출
-    for name, layer in model.named_modules():
-        if name == layer_name:
-            weights = layer.weight.data.cpu()
-            
-    # float32 타입으로 명시적 변환 (혼합 정밀도 학습으로 인한 float16 문제 해결)
-    weights = weights.float()
-
-    # 필터 정규화
-    min_val = weights.min()
-    max_val = weights.max()
-    filters = (weights - min_val) / (max_val - min_val)
-
-    # 필터 시각화 및 저장
-    grid_img = torchvision.utils.make_grid(filters, nrow=8, normalize=True, padding=1)
-
-    plt.imshow(grid_img[0:4].permute(1, 2, 0))
-    plt.title(f"{layer_name} Filters at Epoch {epoch}")
-    plt.axis("off")
-    plt.savefig(
-        os.path.join(filters_dir, f"filters_{layer_name}_epoch_{epoch}.png"),
-        bbox_inches="tight",
-    )
-    plt.close()
-
-
-def visualize_layer_output(model, layer_name, save_path, epoch):
-    # 레이어 출력 이미지를 저장할 디렉토리 확인
-    layers_dir = os.path.join(save_path, "layers")
-    os.makedirs(layers_dir, exist_ok=True)
-    
-    # 해당 레이어의 출력 추출
-    output = model.activations[layer_name].squeeze()
-    
-    # float32 타입으로 명시적 변환 (혼합 정밀도 학습으로 인한 float16 문제 해결)
-    output = output.float()
-
-    if output.dim() == 4:
-        output = output[0]
-
-    # 첫 번째 채널을 시각화 (다른 채널도 선택 가능)
-    img = output.unsqueeze(1).cpu()  # 채널 차원 추가
-
-    grid_img = torchvision.utils.make_grid(img, nrow=8, normalize=True, padding=1)
-
-    plt.imshow(grid_img.permute(1, 2, 0), cmap="gray")
-    plt.title(f"Output of {layer_name} at Epoch {epoch}")
-    plt.axis("off")
-    plt.savefig(
-        os.path.join(layers_dir, f"{layer_name}_output_epoch_{epoch}.png"),
-        bbox_inches="tight",
-    )
-    plt.close()
-
-
 def preprocess(frame):
     """
     프레임을 전처리합니다.
@@ -523,3 +462,56 @@ def compute_gae(rewards, values, dones, next_value, gamma=0.99, lam=0.95):
     returns = returns.view(-1)
     
     return returns, advantages
+
+def save_pretrained_model(model_state, pretrained_dir=None):
+    """
+    모델의 가중치만 저장하는 pretrained 모델 체크포인트를 생성합니다.
+    
+    Args:
+        model_state: 모델의 state_dict
+        pretrained_dir: pretrained 모델을 저장할 디렉토리 (기본값: current_script_path/pretrained)
+    """
+    # pretrained_dir 인자가 없으면 기본값 사용
+    if pretrained_dir is None:
+        pretrained_dir = os.path.join(current_script_path, "pretrained")
+        
+    # pretrained 디렉토리가 없으면 생성
+    if not os.path.exists(pretrained_dir):
+        os.makedirs(pretrained_dir, exist_ok=True)
+        
+    filepath = os.path.join(pretrained_dir, f"pretrained_checkpoint_0.pth")
+    torch.save({"model_state": model_state}, filepath)
+    print(f"Pretrained 모델이 {filepath}에 저장되었습니다.")
+    
+    return filepath
+
+def load_pretrained_model(model, pretrained_dir=None, filename="pretrained_checkpoint_0.pth"):
+    """
+    Pretrained 모델을 불러옵니다.
+    
+    Args:
+        model: 불러올 모델 객체
+        pretrained_dir: pretrained 모델이 있는 디렉토리 (기본값: current_script_path/pretrained)
+        filename: 불러올 파일 이름
+    
+    Returns:
+        성공적으로 불러왔는지 여부 (bool)
+    """
+    # pretrained_dir 인자가 없으면 기본값 사용
+    if pretrained_dir is None:
+        pretrained_dir = os.path.join(current_script_path, "pretrained")
+    
+    filepath = os.path.join(pretrained_dir, filename)
+    
+    if not os.path.exists(filepath):
+        print(f"Pretrained 모델 파일을 찾을 수 없습니다: {filepath}")
+        return False
+    
+    try:
+        checkpoint = torch.load(filepath)
+        model.load_state_dict(checkpoint["model_state"])
+        print(f"Pretrained 모델을 성공적으로 불러왔습니다: {filepath}")
+        return True
+    except Exception as e:
+        print(f"Pretrained 모델을 불러오는 중 오류 발생: {e}")
+        return False
